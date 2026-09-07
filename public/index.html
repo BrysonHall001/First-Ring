@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>First Ring — instant-call console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<header class="board">
+  <div class="board-brand">
+    <span class="ring-dot" aria-hidden="true"></span>
+    <div>
+      <h1>First Ring</h1>
+      <p class="board-sub">Instant-call console · <span class="mono">simulation mode</span></p>
+    </div>
+  </div>
+  <div class="board-lines" id="lineStrip" aria-live="polite">
+    <span class="line-lamp idle"><i></i>Lines idle</span>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button class="tab active" data-view="clients" role="tab">Clients</button>
+  <button class="tab" data-view="calls" role="tab">Call log</button>
+  <button class="tab" data-view="setup" role="tab">AST setup</button>
+</nav>
+
+<main>
+
+<!-- ============================ CLIENTS ============================ -->
+<section id="view-clients" class="view active">
+  <div class="split">
+    <aside class="client-list">
+      <div class="list-head">
+        <h2>Clients</h2>
+        <button class="btn small" id="btnNewClient">Add client</button>
+      </div>
+      <ul id="clientList"></ul>
+    </aside>
+
+    <div class="client-editor" id="clientEditor">
+      <p class="empty">Select a client to edit its agent, or add a new one.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================= CALLS ============================= -->
+<section id="view-calls" class="view">
+  <div class="calls-wrap">
+    <div class="calls-table-wrap">
+      <div class="list-head">
+        <h2>Call log</h2>
+        <span class="hint mono" id="callCount"></span>
+      </div>
+      <table class="calls-table">
+        <thead>
+          <tr><th>When</th><th>Candidate</th><th>Client</th><th>Attempt</th><th>Disposition</th><th>AST</th></tr>
+        </thead>
+        <tbody id="callRows"></tbody>
+      </table>
+      <p class="empty" id="callsEmpty">No calls yet. Open a client and press “Simulate a form submission” to watch the loop run.</p>
+    </div>
+    <aside class="call-detail" id="callDetail">
+      <p class="empty">Select a call to read the transcript.</p>
+    </aside>
+  </div>
+</section>
+
+<!-- ============================= SETUP ============================= -->
+<section id="view-setup" class="view">
+  <div class="setup">
+    <h2>Wiring this into the AST app</h2>
+    <p>The AST developer adds one outbound request and one inbound endpoint. That's the whole integration.</p>
+
+    <h3>1 · When a form with instant-call enabled receives a submission, AST calls:</h3>
+    <pre class="code" id="curlIn"></pre>
+    <p class="hint">Authenticated with the <span class="mono">X-AST-Key</span> header (<span class="mono" id="keyHint"></span>). The call is queued and dialed within the client's calling window.</p>
+
+    <h3>2 · When the call ends, this server posts the result to the client's <em>AST webhook URL</em> (set per client):</h3>
+    <pre class="code">POST {your AST endpoint}
+Header  X-AST-Key: {same shared key}
+
+{
+  "astRecordId": "the candidate record to update",
+  "callId": "call_ab12cd34ef",
+  "disposition": "interested | voicemail | no_answer | callback_requested | not_interested",
+  "summary": "Three-sentence recap written for the recruiter",
+  "attempt": 1,
+  "endedAt": "2026-08-26T14:03:22.000Z"
+}</pre>
+    <p class="hint">AST writes those fields onto the candidate entry — same reporting, new columns.</p>
+
+    <h3>What's simulated right now</h3>
+    <p>The dial itself. Everything else — queueing, calling windows, retries, transcripts, dispositions, the AST webhook — runs for real, so the whole loop is demonstrable today. Swapping the simulator for a real Pipecat + Twilio dial changes one function on the server and nothing in this UI. The keys it will need live in <span class="mono">.env</span> (see <span class="mono">.env.example</span>).</p>
+  </div>
+</section>
+
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
