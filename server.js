@@ -57,15 +57,26 @@ const upload = multer({
 /* ---------------------------- tiny JSON "db" ---------------------------- */
 
 function defaultDb() {
-  return { clients: [], queue: [], calls: [] };
+  return {
+    clients: [],
+    queue: [],
+    calls: [],
+    settings: { displayName: "", userName: "", theme: "blue" },
+    activity: [],
+  };
 }
 
 function loadDb() {
+  let d;
   try {
-    return JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
+    d = JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
   } catch {
-    return defaultDb();
+    d = defaultDb();
   }
+  // Migrate older db files that predate settings/activity.
+  if (!d.settings) d.settings = { displayName: "", userName: "", theme: "blue" };
+  if (!Array.isArray(d.activity)) d.activity = [];
+  return d;
 }
 
 function saveDb(db) {
@@ -77,6 +88,13 @@ let db = loadDb();
 
 function id(prefix) {
   return prefix + "_" + crypto.randomBytes(5).toString("hex");
+}
+
+// Append a dated entry to the activity log (newest first, capped).
+function logActivity(type, message) {
+  db.activity.unshift({ id: id("act"), type, message, at: new Date().toISOString() });
+  if (db.activity.length > 1000) db.activity.length = 1000;
+  // caller is responsible for saveDb (usually already saving right after)
 }
 
 /* ------------------------------ seed data ------------------------------- */
@@ -152,6 +170,7 @@ app.post("/api/clients", (req, res) => {
     createdAt: new Date().toISOString(),
   };
   db.clients.push(c);
+  logActivity("client_created", `Client created: ${c.name}`);
   saveDb(db);
   res.status(201).json(c);
 });
@@ -167,14 +186,38 @@ app.put("/api/clients/:id", (req, res) => {
   for (const f of fields) if (f in req.body) c[f] = req.body[f];
   c.maxAttempts = Number(c.maxAttempts) || 2;
   c.retryDelayMinutes = Number(c.retryDelayMinutes) || 120;
+  logActivity("client_updated", `Client updated: ${c.name}`);
   saveDb(db);
   res.json(c);
 });
 
 app.delete("/api/clients/:id", (req, res) => {
+  const gone = db.clients.find((x) => x.id === req.params.id);
   db.clients = db.clients.filter((x) => x.id !== req.params.id);
+  if (gone) logActivity("client_deleted", `Client deleted: ${gone.name}`);
   saveDb(db);
   res.json({ ok: true });
+});
+
+/* ------------------------- settings + activity -------------------------- */
+
+app.get("/api/settings", (req, res) => {
+  res.json(db.settings);
+});
+
+app.put("/api/settings", (req, res) => {
+  const { displayName, userName, theme } = req.body || {};
+  if (typeof displayName === "string") db.settings.displayName = displayName;
+  if (typeof userName === "string") db.settings.userName = userName;
+  if (theme === "blue" || theme === "allstar") db.settings.theme = theme;
+  logActivity("settings_updated", "Workspace settings updated");
+  saveDb(db);
+  res.json(db.settings);
+});
+
+app.get("/api/activity", (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 200, 1000);
+  res.json(db.activity.slice(0, limit));
 });
 
 /* ------------------------- knowledge doc upload -------------------------- */
@@ -407,6 +450,8 @@ async function finalizeCall(job, result) {
   db.calls.unshift(call);
   job.status = "done";
   job.callId = call.id;
+  const who = (job.candidate.firstName || "Candidate") + " " + (job.candidate.lastName || "");
+  logActivity("call_completed", `Call to ${who.trim()} (${call.clientName}): ${call.disposition.replace(/_/g, " ")}`);
 
   // Retry policy (unchanged: no-answer / callback re-queues per client rules)
   if (

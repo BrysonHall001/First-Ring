@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="blue">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>First Ring — instant-call console</title>
+<title>AST First Ring</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -11,16 +11,21 @@
 </head>
 <body>
 
+<!-- decorative AST canvas (gradient + triangular tile), behind everything -->
+<div class="ast-canvas" aria-hidden="true"></div>
+
 <header class="board">
   <div class="board-brand">
     <span class="ring-dot" aria-hidden="true"></span>
     <div>
-      <h1>First Ring</h1>
-      <p class="board-sub">Instant-call console · <span class="mono">simulation mode</span></p>
+      <h1>AST First Ring</h1>
+      <p class="board-sub">Instant-call console</p>
     </div>
   </div>
-  <div class="board-lines" id="lineStrip" aria-live="polite">
-    <span class="line-lamp idle"><i></i>Lines idle</span>
+  <div class="board-actions">
+    <span class="greeting" id="greeting"></span>
+    <button class="ghost-btn" id="btnChanges">Changes</button>
+    <button class="ghost-btn" id="btnSettings">Settings</button>
   </div>
 </header>
 
@@ -73,7 +78,7 @@
 
 <!-- ============================= SETUP ============================= -->
 <section id="view-setup" class="view">
-  <div class="setup">
+  <div class="setup card">
     <h2>Wiring this into the AST app</h2>
     <p>The AST developer adds one outbound request and one inbound endpoint. That's the whole integration.</p>
 
@@ -94,13 +99,64 @@ Header  X-AST-Key: {same shared key}
   "endedAt": "2026-08-26T14:03:22.000Z"
 }</pre>
     <p class="hint">AST writes those fields onto the candidate entry — same reporting, new columns.</p>
-
-    <h3>What's simulated right now</h3>
-    <p>The dial itself. Everything else — queueing, calling windows, retries, transcripts, dispositions, the AST webhook — runs for real, so the whole loop is demonstrable today. Swapping the simulator for a real Pipecat + Twilio dial changes one function on the server and nothing in this UI. The keys it will need live in <span class="mono">.env</span> (see <span class="mono">.env.example</span>).</p>
   </div>
 </section>
 
 </main>
+
+<!-- ============================ SETTINGS MODAL ============================ -->
+<div class="modal-backdrop" id="settingsModal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="modal-head">
+      <h2 id="settingsTitle">Settings</h2>
+      <button class="modal-x" data-close aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="s_displayName">Workspace name</label>
+        <input type="text" id="s_displayName" placeholder="e.g. All-Star Talent">
+        <div class="sub">Shown in the header.</div>
+      </div>
+      <div class="field">
+        <label for="s_userName">Your name</label>
+        <input type="text" id="s_userName" placeholder="e.g. Bryson">
+        <div class="sub">Used for the greeting.</div>
+      </div>
+      <div class="field">
+        <label>Theme</label>
+        <div class="theme-picker">
+          <button type="button" class="theme-swatch blue" data-theme-choice="blue" aria-label="Classic Blue">
+            <span class="swatch-dot"></span> Classic Blue
+          </button>
+          <button type="button" class="theme-swatch allstar" data-theme-choice="allstar" aria-label="All-Star">
+            <span class="swatch-dot"></span> All-Star (green / orange)
+          </button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <span class="save-note" id="settingsNote"></span>
+      <button class="btn" id="btnSaveSettings">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ CHANGES MODAL ============================ -->
+<div class="modal-backdrop" id="changesModal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="changesTitle">
+    <div class="modal-head">
+      <h2 id="changesTitle">Changes</h2>
+      <button class="modal-x" data-close aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <ul class="activity" id="activityList"></ul>
+      <p class="empty" id="activityEmpty">No activity yet.</p>
+    </div>
+  </div>
+</div>
+
+<!-- corner branding -->
+<div class="powered-by">Powered by <span>ALL-STAR TALENT</span></div>
 
 <script src="app.js"></script>
 </body>

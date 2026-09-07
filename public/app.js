@@ -205,27 +205,97 @@ $("#btnNewClient").addEventListener("click", async () => {
   selectClient(c.id);
 });
 
-/* ------------------------------ queue lamps ------------------------------- */
+/* ------------------------- settings + theme + changes -------------------- */
 
-async function refreshLamps() {
-  try {
-    const q = await (await fetch("/api/queue")).json();
-    const strip = $("#lineStrip");
-    if (q.length === 0) {
-      strip.innerHTML = '<span class="line-lamp idle"><i></i>Lines idle</span>';
-      return;
-    }
-    strip.innerHTML = q
-      .slice(0, 4)
-      .map((j) => {
-        const who = (j.candidate.firstName || "Candidate") + " " + (j.candidate.lastName || "");
-        return j.status === "calling"
-          ? `<span class="line-lamp calling"><i></i>Calling ${esc(who.trim())}</span>`
-          : `<span class="line-lamp queued"><i></i>Queued ${esc(who.trim())}</span>`;
-      })
-      .join("") + (q.length > 4 ? `<span class="line-lamp queued"><i></i>+${q.length - 4} more</span>` : "");
-  } catch {}
+let settings = { displayName: "", userName: "", theme: "blue" };
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme === "allstar" ? "allstar" : "blue";
 }
+
+function renderGreeting() {
+  const g = $("#greeting");
+  const name = settings.userName && settings.userName.trim();
+  g.textContent = name ? `Hi, ${name}` : (settings.displayName ? settings.displayName : "");
+}
+
+async function loadSettings() {
+  try {
+    settings = await (await fetch("/api/settings")).json();
+  } catch {}
+  applyTheme(settings.theme);
+  renderGreeting();
+}
+
+/* settings modal */
+let pendingTheme = "blue";
+function openSettings() {
+  $("#s_displayName").value = settings.displayName || "";
+  $("#s_userName").value = settings.userName || "";
+  pendingTheme = settings.theme === "allstar" ? "allstar" : "blue";
+  markThemeChoice(pendingTheme);
+  $("#settingsModal").hidden = false;
+}
+function markThemeChoice(theme) {
+  document.querySelectorAll(".theme-swatch").forEach((b) =>
+    b.classList.toggle("selected", b.dataset.themeChoice === theme)
+  );
+}
+document.querySelectorAll(".theme-swatch").forEach((b) => {
+  b.addEventListener("click", () => {
+    pendingTheme = b.dataset.themeChoice;
+    markThemeChoice(pendingTheme);
+    applyTheme(pendingTheme); // live preview
+  });
+});
+$("#btnSettings").addEventListener("click", openSettings);
+$("#btnSaveSettings").addEventListener("click", async () => {
+  const body = {
+    displayName: $("#s_displayName").value,
+    userName: $("#s_userName").value,
+    theme: pendingTheme,
+  };
+  const res = await fetch("/api/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.ok) {
+    settings = await res.json();
+    applyTheme(settings.theme);
+    renderGreeting();
+    const n = $("#settingsNote");
+    n.textContent = "Saved";
+    n.style.color = "var(--line-green)";
+    setTimeout(() => { $("#settingsModal").hidden = true; n.textContent = ""; }, 700);
+  }
+});
+
+/* changes modal */
+$("#btnChanges").addEventListener("click", async () => {
+  $("#changesModal").hidden = false;
+  const list = $("#activityList");
+  list.innerHTML = "";
+  try {
+    const acts = await (await fetch("/api/activity?limit=200")).json();
+    $("#activityEmpty").style.display = acts.length ? "none" : "block";
+    list.innerHTML = acts
+      .map((a) => {
+        const when = new Date(a.at).toLocaleString([], {
+          month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+        });
+        return `<li><span class="act-msg">${esc(a.message)}</span><span class="act-when">${when}</span></li>`;
+      })
+      .join("");
+  } catch {}
+});
+
+/* close any modal via the × or clicking the backdrop */
+document.querySelectorAll(".modal-backdrop").forEach((m) => {
+  m.addEventListener("click", (e) => {
+    if (e.target === m || e.target.hasAttribute("data-close")) m.hidden = true;
+  });
+});
 
 /* --------------------------------- calls ---------------------------------- */
 
@@ -305,10 +375,9 @@ function esc(s) {
 /* ---------------------------------- init ---------------------------------- */
 
 (async () => {
+  await loadSettings();
   await loadClients();
   await loadSetup();
   refreshCalls();
-  refreshLamps();
   setInterval(refreshCalls, 3000);
-  setInterval(refreshLamps, 1500);
 })();
