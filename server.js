@@ -24,6 +24,28 @@ const PORT = process.env.PORT || 3000;
 const DB_PATH = path.join(__dirname, "data", "db.json");
 const AST_SHARED_KEY = process.env.AST_SHARED_KEY || "dev-shared-key-change-me";
 
+/* ----------------------- dial mode + Vapi config ------------------------ */
+/*
+ * DIAL_MODE controls how calls are placed:
+ *   "simulation" (default) -> placeSimulatedCall(): fake, free, no phone rings.
+ *   "real"                  -> placeRealCall(): dials via Vapi.
+ * Flip it with the DIAL_MODE env var. Simulation stays forever so you can
+ * test the whole loop (queue, windows, retries, writeback) without dialing.
+ *
+ * The three Vapi IDs live in the environment, never in code. Set them on
+ * Render (Environment tab). VAPI_API_KEY is a secret; the other two are not.
+ */
+const DIAL_MODE = (process.env.DIAL_MODE || "simulation").toLowerCase();
+const VAPI_API_KEY = process.env.VAPI_API_KEY || "";
+const VAPI_ASSISTANT_ID = process.env.VAPI_ASSISTANT_ID || "";
+const VAPI_PHONE_NUMBER_ID = process.env.VAPI_PHONE_NUMBER_ID || "";
+// Optional shared secret to verify Vapi webhooks (set the same value in Vapi).
+const VAPI_WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET || "";
+// When true, each call uses that client's own `instructions` as the system
+// prompt (the 50-client mechanism). Off by default so your first real test
+// uses the exact assistant you already tuned in the Vapi dashboard.
+const USE_CLIENT_INSTRUCTIONS = process.env.USE_CLIENT_INSTRUCTIONS === "true";
+
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -278,7 +300,8 @@ setInterval(() => {
       job.status = "calling";
       job.startedAt = new Date().toISOString();
       saveDb(db);
-      placeSimulatedCall(job);
+      if (DIAL_MODE === "real") placeRealCall(job);
+      else placeSimulatedCall(job);
     }
   }
 }, 2000);
@@ -349,67 +372,236 @@ function pickOutcome() {
   return SIM_OUTCOMES[0];
 }
 
+/*
+ * finalizeCall(job, result) — the SHARED "call is over, now record it" logic.
+ * Both the simulated dialer and the real Vapi webhook end here, so retries and
+ * AST write-back behave identically no matter how the call was placed.
+ *
+ * `result` is the clean seam between "how we dialed" and "what we do after":
+ *   { disposition, summary, transcript, durationSeconds, simulated,
+ *     answers?, needsReview? }
+ * Job 1 uses disposition + summary. Job 2/3 later add `answers` (pre-screen
+ * responses) and `needsReview` (the "not confident, flag a human" escape
+ * hatch) — they flow straight through to the call record and the AST write-back
+ * with zero rework here.
+ */
+async function finalizeCall(job, result) {
+  const client = db.clients.find((x) => x.id === job.clientId);
+  const call = {
+    id: id("call"),
+    simulated: !!result.simulated,
+    clientId: job.clientId,
+    clientName: client ? client.name : "(deleted client)",
+    candidate: job.candidate,
+    attempt: job.attempt,
+    disposition: result.disposition,
+    summary: result.summary || "",
+    transcript: result.transcript || [],
+    durationSeconds: result.durationSeconds || 0,
+    // Job 2/3-ready: only present when the dialer actually captured them.
+    ...(result.answers ? { answers: result.answers } : {}),
+    ...(result.needsReview != null ? { needsReview: result.needsReview } : {}),
+    startedAt: job.startedAt,
+    endedAt: new Date().toISOString(),
+  };
+  db.calls.unshift(call);
+  job.status = "done";
+  job.callId = call.id;
+
+  // Retry policy (unchanged: no-answer / callback re-queues per client rules)
+  if (
+    (result.disposition === "no_answer" || result.disposition === "callback_requested") &&
+    client && job.attempt < (client.maxAttempts || 2)
+  ) {
+    const retry = enqueueCall(client, job.candidate, job.attempt + 1);
+    retry.dueAt = new Date(Date.now() + (client.retryDelayMinutes || 120) * 60000).toISOString();
+    call.retryJobId = retry.id;
+  }
+
+  // Push the result back to AST if a webhook is configured
+  if (client && client.astWebhookUrl) {
+    try {
+      await fetch(client.astWebhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-AST-Key": AST_SHARED_KEY },
+        body: JSON.stringify({
+          astRecordId: job.candidate.astRecordId,
+          callId: call.id,
+          disposition: call.disposition,
+          summary: call.summary,
+          attempt: call.attempt,
+          endedAt: call.endedAt,
+          // Job 2/3-ready: included only when present.
+          ...(call.answers ? { answers: call.answers } : {}),
+          ...(call.needsReview != null ? { needsReview: call.needsReview } : {}),
+        }),
+      });
+      call.astDelivery = "delivered";
+    } catch (e) {
+      call.astDelivery = "failed: " + e.message;
+    }
+  } else {
+    call.astDelivery = "no webhook configured";
+  }
+
+  saveDb(db);
+}
+
+/* -------------------- simulated dialer (free test mode) ------------------ */
+
 function placeSimulatedCall(job) {
   const client = db.clients.find((x) => x.id === job.clientId);
   const durationMs = 5000 + Math.floor(Math.random() * 5000);
 
-  setTimeout(async () => {
+  setTimeout(() => {
     const outcome = pickOutcome();
     const transcript = outcome.transcript(job.candidate, client || { name: "the agency" });
-    const call = {
-      id: id("call"),
+    finalizeCall(job, {
       simulated: true,
-      clientId: job.clientId,
-      clientName: client ? client.name : "(deleted client)",
-      candidate: job.candidate,
-      attempt: job.attempt,
       disposition: outcome.disposition,
       summary: outcome.summary,
       transcript,
       durationSeconds: transcript.length ? 30 + Math.floor(Math.random() * 120) : 0,
-      startedAt: job.startedAt,
-      endedAt: new Date().toISOString(),
-    };
-    db.calls.unshift(call);
-    job.status = "done";
-    job.callId = call.id;
-
-    // Retry policy
-    if (
-      (outcome.disposition === "no_answer" || outcome.disposition === "callback_requested") &&
-      client && job.attempt < (client.maxAttempts || 2)
-    ) {
-      const retry = enqueueCall(client, job.candidate, job.attempt + 1);
-      retry.dueAt = new Date(Date.now() + (client.retryDelayMinutes || 120) * 60000).toISOString();
-      call.retryJobId = retry.id;
-    }
-
-    // Push the result back to AST if a webhook is configured
-    if (client && client.astWebhookUrl) {
-      try {
-        await fetch(client.astWebhookUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-AST-Key": AST_SHARED_KEY },
-          body: JSON.stringify({
-            astRecordId: job.candidate.astRecordId,
-            callId: call.id,
-            disposition: call.disposition,
-            summary: call.summary,
-            attempt: call.attempt,
-            endedAt: call.endedAt,
-          }),
-        });
-        call.astDelivery = "delivered";
-      } catch (e) {
-        call.astDelivery = "failed: " + e.message;
-      }
-    } else {
-      call.astDelivery = "no webhook configured";
-    }
-
-    saveDb(db);
+    });
   }, durationMs);
 }
+
+/* ------------------------ real dialer (Vapi) ---------------------------- */
+/*
+ * Places a real outbound call through Vapi, then returns immediately. The
+ * call runs "out there"; when it ends, Vapi POSTs an end-of-call report to
+ * /api/vapi/webhook, which calls finalizeCall() with the outcome.
+ *
+ * We tag each call with metadata.jobId so the webhook can match the report
+ * back to the right job.
+ */
+async function placeRealCall(job) {
+  if (!VAPI_API_KEY || !VAPI_ASSISTANT_ID || !VAPI_PHONE_NUMBER_ID) {
+    console.error("Real dial requested but VAPI_* env vars are not all set.");
+    job.status = "failed";
+    job.error = "missing VAPI env config";
+    saveDb(db);
+    return;
+  }
+  const client = db.clients.find((x) => x.id === job.clientId);
+
+  const body = {
+    phoneNumberId: VAPI_PHONE_NUMBER_ID,
+    assistantId: VAPI_ASSISTANT_ID,
+    customer: { number: job.candidate.phone },
+    metadata: { jobId: job.id },
+  };
+
+  // Per-client prompt injection — the mechanism that scales to 50+ clients.
+  // Off by default (USE_CLIENT_INSTRUCTIONS=false) so the first real test uses
+  // the dashboard assistant you already tuned. Flip it on to prove per-client
+  // scripts, and this is also where Job 2 pre-screen questions would live.
+  if (USE_CLIENT_INSTRUCTIONS && client && client.instructions) {
+    body.assistantOverrides = {
+      variableValues: {
+        firstName: job.candidate.firstName || "there",
+        position: job.candidate.position || "",
+        clientName: client.name || "",
+      },
+      model: { messages: [{ role: "system", content: client.instructions }] },
+    };
+  }
+
+  try {
+    const resp = await fetch("https://api.vapi.ai/call", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${VAPI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      console.error("Vapi call failed to start:", resp.status, text);
+      job.status = "failed";
+      job.error = `vapi ${resp.status}: ${text.slice(0, 200)}`;
+      saveDb(db);
+      return;
+    }
+    const data = await resp.json();
+    job.vapiCallId = data.id || (data.call && data.call.id) || null;
+    // job stays "calling" until the end-of-call webhook finalizes it.
+    saveDb(db);
+  } catch (e) {
+    console.error("Vapi call error:", e.message);
+    job.status = "failed";
+    job.error = e.message;
+    saveDb(db);
+  }
+}
+
+/* ---------- map a Vapi end-of-call report -> our result shape ----------- */
+
+function mapVapiReport(msg) {
+  const call = msg.call || {};
+  const endedReason = (msg.endedReason || call.endedReason || "").toLowerCase();
+  const summary = msg.summary || "";
+
+  // Build a simple [ [speaker, text], ... ] transcript from Vapi's messages.
+  let transcript = [];
+  if (Array.isArray(msg.messages)) {
+    transcript = msg.messages
+      .filter((m) => m.role === "assistant" || m.role === "user" || m.role === "bot")
+      .map((m) => [m.role === "user" ? "candidate" : "agent", m.message || m.content || ""]);
+  } else if (msg.transcript) {
+    transcript = [["transcript", msg.transcript]];
+  }
+
+  const durationSeconds = Math.round(msg.durationSeconds || call.durationSeconds || 0);
+
+  // Disposition: prefer a structured value if you configure Vapi analysis
+  // (Job 2), otherwise derive a sensible one from how the call ended.
+  const structured = (msg.analysis && msg.analysis.structuredData) || null;
+  let disposition = "completed";
+  if (structured && structured.disposition) {
+    disposition = structured.disposition;
+  } else if (endedReason.includes("no-answer") || endedReason.includes("did-not-answer") || endedReason.includes("busy")) {
+    disposition = "no_answer";
+  } else if (endedReason.includes("voicemail")) {
+    disposition = "voicemail";
+  }
+
+  // Job 2/3-ready passthroughs (populated once Vapi structured outputs exist).
+  const answers = structured && structured.answers ? structured.answers : undefined;
+  const needsReview = structured && structured.needsReview != null ? structured.needsReview : undefined;
+
+  return { simulated: false, disposition, summary, transcript, durationSeconds, answers, needsReview };
+}
+
+/* -------------------- Vapi end-of-call webhook -------------------------- */
+/*
+ * Point your Vapi number's Server URL at:  <your-render-url>/api/vapi/webhook
+ * Vapi POSTs several event types; we only act on "end-of-call-report".
+ */
+app.post("/api/vapi/webhook", async (req, res) => {
+  if (VAPI_WEBHOOK_SECRET && req.get("x-vapi-secret") !== VAPI_WEBHOOK_SECRET) {
+    return res.status(401).json({ error: "bad or missing webhook secret" });
+  }
+  const msg = req.body && req.body.message;
+  if (!msg || msg.type !== "end-of-call-report") {
+    return res.json({ ok: true }); // ack everything else quickly
+  }
+
+  const call = msg.call || {};
+  const jobId = call.metadata && call.metadata.jobId;
+  let job = jobId ? db.queue.find((j) => j.id === jobId) : null;
+  if (!job && call.id) job = db.queue.find((j) => j.vapiCallId === call.id);
+
+  if (!job) {
+    console.warn("Vapi webhook: no matching job for call", call.id);
+    return res.json({ ok: true });
+  }
+  if (job.status === "done") return res.json({ ok: true }); // idempotent
+
+  await finalizeCall(job, mapVapiReport(msg));
+  res.json({ ok: true });
+});
 
 /* -------------------------------- calls --------------------------------- */
 
@@ -436,7 +628,8 @@ app.get("/api/integration", (req, res) => {
       AST_SHARED_KEY === "dev-shared-key-change-me"
         ? "dev-shared-key-change-me (default — set AST_SHARED_KEY in .env)"
         : "configured via .env",
-    simulation: true,
+    simulation: DIAL_MODE !== "real",
+    dialMode: DIAL_MODE,
   });
 });
 
@@ -450,7 +643,10 @@ app.post("/api/demo/submit", (req, res) => {
   const candidate = {
     firstName: first[Math.floor(Math.random() * first.length)],
     lastName: last[Math.floor(Math.random() * last.length)],
-    phone: "+1555" + String(Math.floor(1000000 + Math.random() * 8999999)),
+    // In real dial mode, POST { clientId, phone: "+1YOURCELL" } to dial a real
+    // (verified) number for testing. Left blank, it uses a fake 555 number
+    // (fine for simulation mode only).
+    phone: req.body.phone || "+1555" + String(Math.floor(1000000 + Math.random() * 8999999)),
     position: client.position || "Recruit",
     astRecordId: "demo_" + Date.now(),
   };

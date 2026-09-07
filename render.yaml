@@ -1,0 +1,25 @@
+# Render Blueprint for First Ring (Batch 1 — simulation mode)
+#
+# This defines the service so Render can set it up automatically.
+# It uses a PAID "starter" instance ON PURPOSE: this service runs an
+# always-on queue worker (a loop that wakes every 2 seconds to check for
+# calls that are due). Render's FREE tier spins the process down when idle,
+# which stops that loop — so free tier is not suitable for this workload.
+#
+# If you just want a 10-minute throwaway poke-test and don't mind the
+# spin-down caveat, you can change `plan: starter` to `plan: free`.
+
+services:
+  - type: web
+    name: first-ring
+    runtime: node
+    plan: starter          # ~$7/mo, always-on. Do NOT use free for real testing.
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      # Render sets PORT automatically; server.js already reads process.env.PORT.
+      - key: AST_SHARED_KEY
+        generateValue: true   # Render generates a strong random secret for you.
+                              # You'll find it in the Render dashboard → Environment.
+                              # You don't need it for Batch 1 (the demo button
+                              # doesn't require it) — it's for AST/Zapier later.
