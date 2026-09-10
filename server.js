@@ -110,8 +110,9 @@ function logActivity(type, message) {
 /* ------------------------------ seed data ------------------------------- */
 
 if (db.clients.length === 0) {
+  const demoId = id("cl");
   db.clients.push({
-    id: id("cl"),
+    id: demoId,
     name: "Demo County Sheriff's Office",
     position: "Corrections Officer",
     outboundNumber: "+1 (555) 010-0199 (placeholder)",
@@ -136,8 +137,87 @@ if (db.clients.length === 0) {
       "- If asked something you don't know, say a recruiter will answer that in the follow-up\n" +
       "- If they say they're no longer interested, thank them politely and end the call",
     knowledgeDocs: [],
+    astImport: {
+      embedKey: "8fa85f6caead4d74a8afe9dda920fd94",
+      zapierUrl: "https://app.allstarrecruiter.com/candidate/intake/leadformzapier",
+      origin: "https://www.example-sheriff.gov",
+      prescreen: [
+        {
+          id: "q_age",
+          question: "Just to confirm, are you at least 21 years old?",
+          answers: [
+            { label: "Yes", slug: "opt-age21-yes", expected: true, unclear: false },
+            { label: "No", slug: "opt-age21-no", expected: false, unclear: false },
+            { label: "Unclear", slug: "opt-age21-review", expected: false, unclear: true },
+          ],
+        },
+        {
+          id: "q_felony",
+          question: "Have you ever been convicted of a felony?",
+          answers: [
+            { label: "No", slug: "opt-felony-no", expected: true, unclear: false },
+            { label: "Yes", slug: "opt-felony-yes", expected: false, unclear: false },
+            { label: "Unclear", slug: "opt-felony-review", expected: false, unclear: true },
+          ],
+        },
+      ],
+    },
     createdAt: new Date().toISOString(),
   });
+
+  // Seed a batch of historical calls spread over the last several days so the
+  // Analytics and Call log tabs look alive out of the box.
+  const firsts = ["Jordan", "Casey", "Riley", "Sam", "Alex", "Taylor", "Devin", "Morgan", "Jamie", "Avery", "Quinn", "Drew"];
+  const lasts = ["Reyes", "Foster", "Hayes", "Carter", "Nguyen", "Brooks", "Diaz", "Patel", "Okafor", "Reed"];
+  const outcomes = [
+    { d: "interested", w: 6, s: "Candidate confirmed continued interest and asked about shift schedule. Agreed to a recruiter follow-up.", conv: true },
+    { d: "interested", w: 5, s: "Enthusiastic; asked about the academy timeline. Wants to move forward.", conv: true },
+    { d: "voicemail", w: 4, s: "No answer — left a brief voicemail introducing the opportunity.", conv: false },
+    { d: "no_answer", w: 3, s: "", conv: false },
+    { d: "callback_requested", w: 2, s: "Was driving; asked to be called back this evening.", conv: true },
+    { d: "not_interested", w: 2, s: "Politely declined — took another position.", conv: true },
+  ];
+  const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  const weighted = [];
+  outcomes.forEach((o) => { for (let i = 0; i < o.w; i++) weighted.push(o); });
+
+  const seededCalls = [];
+  for (let i = 0; i < 22; i++) {
+    const o = pick(weighted);
+    const daysAgo = Math.floor(Math.random() * 7);
+    const ended = new Date();
+    ended.setDate(ended.getDate() - daysAgo);
+    ended.setHours(9 + Math.floor(Math.random() * 9), Math.floor(Math.random() * 60), 0, 0);
+    const fn = pick(firsts), ln = pick(lasts);
+    const conv = o.conv;
+    seededCalls.push({
+      id: id("call"),
+      simulated: true,
+      clientId: demoId,
+      clientName: "Demo County Sheriff's Office",
+      candidate: { firstName: fn, lastName: ln, phone: "+1555" + String(1000000 + Math.floor(Math.random() * 8999999)), position: "Corrections Officer", astRecordId: null },
+      attempt: Math.random() < 0.2 ? 2 : 1,
+      disposition: o.d,
+      summary: o.s,
+      transcript: conv
+        ? [
+            ["agent", `Hi, is this ${fn}? This is the recruiting assistant for Demo County Sheriff's Office about the Corrections Officer application you submitted.`],
+            ["candidate", "Oh yeah, hi."],
+            ["agent", "We like to reach out while it's fresh. Are you still interested in the position?"],
+            ["candidate", o.d === "not_interested" ? "Actually I just accepted something else, but thank you." : "Yes, definitely."],
+          ]
+        : [],
+      durationSeconds: conv ? 40 + Math.floor(Math.random() * 120) : 0,
+      startedAt: ended.toISOString(),
+      endedAt: ended.toISOString(),
+      astDelivery: "no webhook configured",
+    });
+  }
+  // newest first
+  seededCalls.sort((a, b) => new Date(b.endedAt) - new Date(a.endedAt));
+  db.calls.push(...seededCalls);
+
+  logActivity("seed", "Demo client and sample call history seeded");
   saveDb(db);
 }
 
@@ -204,7 +284,15 @@ app.put("/api/clients/:id", (req, res) => {
   c.maxAttempts = Number(c.maxAttempts) || 2;
   c.retryDelayMinutes = Number(c.retryDelayMinutes) || 120;
   if (!c.astImport) c.astImport = { embedKey: "", zapierUrl: "", origin: "", prescreen: [] };
-  logActivity("client_updated", `Client updated: ${c.name}`);
+  // Describe what actually changed for a useful audit trail.
+  if ("astImport" in req.body) {
+    const n = (c.astImport.prescreen || []).length;
+    logActivity("astimport_updated", `AST App Import updated for ${c.name} (${n} pre-screen question${n === 1 ? "" : "s"})`);
+  } else if ("instantCall" in req.body && Object.keys(req.body).length <= 2) {
+    logActivity("client_toggled", `Instant call ${c.instantCall ? "enabled" : "disabled"} for ${c.name}`);
+  } else {
+    logActivity("client_updated", `Settings updated for ${c.name}`);
+  }
   saveDb(db);
   res.json(c);
 });
@@ -278,6 +366,7 @@ app.post("/api/clients/:id/knowledge", upload.single("file"), async (req, res) =
     uploadedAt: new Date().toISOString(),
   };
   c.knowledgeDocs.push(doc);
+  logActivity("knowledge_added", `Knowledge doc "${doc.name}" added to ${c.name}`);
   saveDb(db);
   res.status(201).json({ id: doc.id, name: doc.name, chars: doc.chars, uploadedAt: doc.uploadedAt });
 });
@@ -285,7 +374,9 @@ app.post("/api/clients/:id/knowledge", upload.single("file"), async (req, res) =
 app.delete("/api/clients/:id/knowledge/:docId", (req, res) => {
   const c = db.clients.find((x) => x.id === req.params.id);
   if (!c) return res.status(404).json({ error: "Client not found" });
+  const doc = c.knowledgeDocs.find((d) => d.id === req.params.docId);
   c.knowledgeDocs = c.knowledgeDocs.filter((d) => d.id !== req.params.docId);
+  if (doc) logActivity("knowledge_removed", `Knowledge doc "${doc.name}" removed from ${c.name}`);
   saveDb(db);
   res.json({ ok: true });
 });
@@ -361,6 +452,7 @@ app.post("/api/embed/:clientId/submit", (req, res) => {
     return res.json({ ok: true, queued: false, reason: "instant call off" });
   }
   const job = enqueueCall(client, candidate, 1);
+  logActivity("embed_lead", `Webflow lead ${candidate.firstName} ${candidate.lastName} (${client.name}) opted in to calls`);
   res.status(202).json({ ok: true, queued: true, jobId: job.id });
 });
 
@@ -390,6 +482,14 @@ function enqueueCall(client, candidate, attempt) {
     dueAt: dueAt.toISOString(),
   };
   db.queue.push(job);
+  const who = ((candidate.firstName || "") + " " + (candidate.lastName || "")).trim() || candidate.phone;
+  if (attempt > 1) {
+    logActivity("call_retry", `Retry #${attempt} scheduled for ${who} (${client.name})`);
+  } else if (!inWindow) {
+    logActivity("call_deferred", `Call to ${who} (${client.name}) deferred to ${new Date(dueAt).toLocaleString()}`);
+  } else {
+    logActivity("call_queued", `Call queued for ${who} (${client.name})`);
+  }
   saveDb(db);
   return job;
 }
@@ -575,6 +675,55 @@ async function finalizeCall(job, result) {
     call.astDelivery = "no webhook configured";
   }
 
+  // ---- Pre-screen slug write-back to the AST app ----
+  // For each configured pre-screen question, take the answer the bot captured,
+  // find the matching answer row, and collect its slug. Unclear answers use the
+  // question's designated "unclear" slug if one was set. Then POST all slugs to
+  // the AST endpoint as a Tags array (native AST format — no Zapier).
+  const imp = client && client.astImport;
+  if (imp && imp.embedKey && (imp.prescreen || []).length && result.answers) {
+    const slugs = [];
+    const mapped = [];
+    imp.prescreen.forEach((q, i) => {
+      const given = String(result.answers[`q${i + 1}`] || "").trim().toLowerCase();
+      if (!given) return;
+      const match = (q.answers || []).find((a) => (a.label || "").trim().toLowerCase() === given);
+      if (match && match.slug) {
+        slugs.push(match.slug);
+        mapped.push(`${q.question} → ${match.label}`);
+      } else {
+        // unclear / no match → use the answer row flagged as the "unclear" slug
+        const unclear = (q.answers || []).find((a) => a.unclear && a.slug);
+        if (unclear) {
+          slugs.push(unclear.slug);
+          mapped.push(`${q.question} → unclear`);
+        }
+      }
+    });
+    call.prescreenMapped = mapped;
+    if (slugs.length) {
+      try {
+        await fetch(imp.zapierUrl || "https://app.allstarrecruiter.com/candidate/intake/leadformzapier", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            EmbedKey: imp.embedKey,
+            FirstName: job.candidate.firstName || "",
+            LastName: job.candidate.lastName || "",
+            PhoneNumber: job.candidate.phone || "",
+            Tags: slugs,
+            Origin: imp.origin || "",
+          }),
+        });
+        call.astImportDelivery = `posted ${slugs.length} tag(s)`;
+        logActivity("prescreen_posted", `Pre-screen tags posted to AST for ${who.trim()} (${call.clientName}): ${slugs.length} tag(s)`);
+      } catch (e) {
+        call.astImportDelivery = "failed: " + e.message;
+        logActivity("prescreen_failed", `Pre-screen post to AST failed for ${who.trim()} (${call.clientName})`);
+      }
+    }
+  }
+
   saveDb(db);
 }
 
@@ -615,6 +764,7 @@ async function placeRealCall(job) {
     return;
   }
   const client = db.clients.find((x) => x.id === job.clientId);
+  const prescreen = (client && client.astImport && client.astImport.prescreen) || [];
 
   const body = {
     phoneNumberId: VAPI_PHONE_NUMBER_ID,
@@ -623,19 +773,50 @@ async function placeRealCall(job) {
     metadata: { jobId: job.id },
   };
 
-  // Per-client prompt injection — the mechanism that scales to 50+ clients.
-  // Off by default (USE_CLIENT_INSTRUCTIONS=false) so the first real test uses
-  // the dashboard assistant you already tuned. Flip it on to prove per-client
-  // scripts, and this is also where Job 2 pre-screen questions would live.
-  if (USE_CLIENT_INSTRUCTIONS && client && client.instructions) {
-    body.assistantOverrides = {
-      variableValues: {
-        firstName: job.candidate.firstName || "there",
-        position: job.candidate.position || "",
-        clientName: client.name || "",
+  // Build assistant overrides. We override when we have client instructions OR
+  // pre-screen questions to ask (pre-screen forces per-client behavior).
+  const overrides = {
+    variableValues: {
+      firstName: job.candidate.firstName || "there",
+      position: job.candidate.position || "",
+      clientName: (client && client.name) || "",
+    },
+  };
+  let systemPrompt = USE_CLIENT_INSTRUCTIONS && client && client.instructions ? client.instructions : "";
+
+  if (prescreen.length) {
+    // Append the pre-screen questions to the system prompt in interview style,
+    // and ask Vapi to return the answers as structured data we can map to slugs.
+    const qLines = prescreen
+      .map((q, i) => `  ${i + 1}. ${q.question}`)
+      .join("\n");
+    systemPrompt +=
+      `\n\nDuring the call, work these pre-screen questions into the conversation naturally, one at a time, in a friendly interview style. Do NOT read them like a form and do NOT reveal which answer is "correct" — just ask and listen:\n${qLines}\n` +
+      `\nAfter the call, the system will record each answer. If a candidate's answer is unclear or they decline, mark it "unclear" rather than guessing.`;
+
+    // Structured output: one field per question (q1, q2, ...) with the answer label.
+    body.assistantOverrides = overrides; // set below with model+analysis
+    const properties = {};
+    prescreen.forEach((q, i) => {
+      const labels = (q.answers || []).map((a) => a.label).filter(Boolean);
+      properties[`q${i + 1}`] = {
+        type: "string",
+        description: `Answer to: "${q.question}". One of: ${labels.join(", ") || "the candidate's answer"}, or "unclear" if not clearly answered.`,
+      };
+    });
+    overrides.analysisPlan = {
+      structuredDataPlan: {
+        enabled: true,
+        schema: { type: "object", properties },
       },
-      model: { messages: [{ role: "system", content: client.instructions }] },
     };
+  }
+
+  if (systemPrompt) {
+    overrides.model = { messages: [{ role: "system", content: systemPrompt }] };
+  }
+  if (systemPrompt || prescreen.length) {
+    body.assistantOverrides = overrides;
   }
 
   try {
@@ -698,11 +879,12 @@ function mapVapiReport(msg) {
     disposition = "voicemail";
   }
 
-  // Job 2/3-ready passthroughs (populated once Vapi structured outputs exist).
-  const answers = structured && structured.answers ? structured.answers : undefined;
-  const needsReview = structured && structured.needsReview != null ? structured.needsReview : undefined;
+  // Pre-screen answers: our schema returns them as top-level keys q1, q2, …
+  // so the whole structured object IS the answers map. (disposition, if present,
+  // is handled above and harmless to leave in.)
+  const answers = structured || undefined;
 
-  return { simulated: false, disposition, summary, transcript, durationSeconds, answers, needsReview };
+  return { simulated: false, disposition, summary, transcript, durationSeconds, answers };
 }
 
 /* -------------------- Vapi end-of-call webhook -------------------------- */

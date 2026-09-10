@@ -178,6 +178,14 @@ function renderClientSettings(c) {
       <div class="sub">The agent's system prompt: who it represents, key facts (salary, shifts, requirements), and rules for the call. This is per-client, so each client's agent speaks for them.</div>
     </div>
 
+    <div class="callout">
+      <span class="callout-icon">💬</span>
+      <div>
+        <strong>Adding pre-screen questions?</strong> Don't put them here. Add them on the
+        <button type="button" class="linklike" id="goAstImport">AST App Import</button> tab, where you can map each answer to its intake-form tag so responses flow back into the AST app automatically.
+      </div>
+    </div>
+
     <div class="field">
       <label>Knowledge documents</label>
       <div class="sub">Upload a PDF, DOCX, TXT, or MD — the text is extracted and given to the agent alongside the instructions.</div>
@@ -215,6 +223,13 @@ function renderClientSettings(c) {
 
   $("#f_instantCall").addEventListener("change", (e) => {
     $("#toggleRow").classList.toggle("disabled", !e.target.checked);
+  });
+
+  const goImport = document.getElementById("goAstImport");
+  if (goImport) goImport.addEventListener("click", () => {
+    clientTab = "astimport";
+    document.querySelectorAll("#clientDetailMode .ctab").forEach((x) => x.classList.toggle("active", x.dataset.ctab === "astimport"));
+    renderClientTab(cid);
   });
 
   $("#btnSave").addEventListener("click", async () => {
@@ -553,6 +568,7 @@ function renderPrescreenRow(q, qi) {
         <input class="pa-label" placeholder="Answer (e.g. Yes)" value="${esc(a.label || "")}">
         <input class="pa-slug mono" placeholder="tag slug (opt-… / grp-…)" value="${esc(a.slug || "")}">
         <label class="pa-exp"><input type="checkbox" class="pa-expected" ${a.expected ? "checked" : ""}> expected</label>
+        <label class="pa-exp"><input type="checkbox" class="pa-unclear" ${a.unclear ? "checked" : ""}> unclear</label>
         <button class="pa-del" title="Remove answer">×</button>
       </div>`)
     .join("");
@@ -564,6 +580,7 @@ function renderPrescreenRow(q, qi) {
       </div>
       <div class="pa-list">${answers}</div>
       <button class="pa-add btn ghost small">+ Add answer</button>
+      <p class="pq-hint">Tip: add one row marked <strong>unclear</strong> with its own slug — if the bot can't tell what they answered, that slug gets sent instead of guessing.</p>
     </div>`;
 }
 
@@ -579,6 +596,7 @@ function bindPrescreenRow(row) {
         <input class="pa-label" placeholder="Answer (e.g. No)">
         <input class="pa-slug mono" placeholder="tag slug (opt-… / grp-…)">
         <label class="pa-exp"><input type="checkbox" class="pa-expected"> expected</label>
+        <label class="pa-exp"><input type="checkbox" class="pa-unclear"> unclear</label>
         <button class="pa-del" title="Remove answer">×</button>
       </div>`);
     bindAnswerDeletes(row);
@@ -600,7 +618,12 @@ function collectPrescreen() {
       const label = ar.querySelector(".pa-label").value.trim();
       const slug = ar.querySelector(".pa-slug").value.trim();
       if (!label && !slug) return;
-      answers.push({ label, slug, expected: ar.querySelector(".pa-expected").checked });
+      answers.push({
+        label,
+        slug,
+        expected: ar.querySelector(".pa-expected").checked,
+        unclear: ar.querySelector(".pa-unclear").checked,
+      });
     });
     out.push({ id: "q_" + Math.random().toString(36).slice(2, 8), question, answers });
   });
