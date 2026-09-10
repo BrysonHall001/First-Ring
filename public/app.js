@@ -7,6 +7,17 @@ let clientTab = "settings"; // settings | analytics | calllog | embed | astimpor
 
 const $ = (s) => document.querySelector(s);
 
+// Canonical disposition labels (Batch 4F set)
+const DISPO_LABELS = {
+  answered: "Answered",
+  answered_prescreen: "Answered – Pre-Screen",
+  prescreen_unclear: "Pre-Screen Unclear",
+  no_answer: "No Answer",
+};
+function dispoLabel(d) {
+  return DISPO_LABELS[d] || String(d || "").replace(/_/g, " ");
+}
+
 /* --------------------------------- tabs ---------------------------------- */
 
 document.querySelectorAll(".tab").forEach((t) => {
@@ -58,6 +69,14 @@ function openClientDetail(cid) {
   renderClientTab(cid);
 }
 $("#btnBackToList").addEventListener("click", () => { showListMode(); loadClients(); });
+$("#btnDeleteTenant").addEventListener("click", async () => {
+  const c = clients.find((x) => x.id === selectedClientId);
+  if (!c) return;
+  if (!confirm(`Delete "${c.name}" and all of its config and call history? This can't be undone.`)) return;
+  await fetch("/api/clients/" + selectedClientId, { method: "DELETE" });
+  showListMode();
+  await loadClients();
+});
 document.querySelectorAll("#clientDetailMode .ctab").forEach((t) =>
   t.addEventListener("click", () => {
     clientTab = t.dataset.ctab;
@@ -328,7 +347,7 @@ async function renderClientAnalytics(c) {
     .map(([d, n]) => {
       const pct = Math.round((n / a.total) * 100);
       return `<div class="disp-row">
-        <span class="badge ${d}">${d.replace(/_/g, " ")}</span>
+        <span class="badge ${d}">${dispoLabel(d)}</span>
         <div class="disp-bar"><div class="disp-fill ${d}" style="width:${pct}%"></div></div>
         <span class="disp-num">${n} · ${pct}%</span>
       </div>`;
@@ -347,7 +366,7 @@ async function renderClientAnalytics(c) {
     <div class="metric-grid">
       <div class="metric"><span class="m-num">${a.total}</span><span class="m-lbl">Total calls</span></div>
       <div class="metric"><span class="m-num">${a.connectRate}%</span><span class="m-lbl">Connect rate</span></div>
-      <div class="metric"><span class="m-num">${a.interestRate}%</span><span class="m-lbl">Interested</span></div>
+      <div class="metric"><span class="m-num">${a.prescreenClearRate == null ? "—" : a.prescreenClearRate + "%"}</span><span class="m-lbl">Pre-screen clear</span></div>
       <div class="metric"><span class="m-num">${a.avgDuration}s</span><span class="m-lbl">Avg duration</span></div>
       <div class="metric"><span class="m-num">${a.avgAttempts}</span><span class="m-lbl">Avg attempts</span></div>
     </div>
@@ -393,7 +412,7 @@ async function renderClientCallLog(c) {
     .map((cl) => {
       const when = new Date(cl.endedAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
       const who = esc(((cl.candidate.firstName || "") + " " + (cl.candidate.lastName || "")).trim() || cl.candidate.phone);
-      return `<tr data-call="${cl.id}"><td class="mono">${when}</td><td>${who}</td><td class="mono">${cl.attempt}</td><td><span class="badge ${cl.disposition}">${cl.disposition.replace(/_/g, " ")}</span></td><td class="mono">${cl.astDelivery === "delivered" ? "✓" : "—"}</td></tr>`;
+      return `<tr data-call="${cl.id}"><td class="mono">${when}</td><td>${who}</td><td class="mono">${cl.attempt}</td><td><span class="badge ${cl.disposition}">${dispoLabel(cl.disposition)}</span></td><td class="mono">${cl.astDelivery === "delivered" ? "✓" : "—"}</td></tr>`;
     })
     .join("");
   tb.addEventListener("click", async (e) => {
@@ -405,7 +424,7 @@ async function renderClientCallLog(c) {
     const who = ((call.candidate.firstName || "") + " " + (call.candidate.lastName || "")).trim();
     $("#clCallDetail").innerHTML = `
       <h2>${esc(who || call.candidate.phone)}</h2>
-      <div class="detail-meta">attempt ${call.attempt} · ${call.durationSeconds}s · <span class="badge ${call.disposition}">${call.disposition.replace(/_/g, " ")}</span></div>
+      <div class="detail-meta">attempt ${call.attempt} · ${call.durationSeconds}s · <span class="badge ${call.disposition}">${dispoLabel(call.disposition)}</span></div>
       ${call.summary ? `<div class="summary-block">${esc(call.summary)}</div>` : ""}
       ${call.transcript.length
         ? `<div class="transcript">` + call.transcript.map(([role, line]) => `<div class="turn ${role}"><span class="who">${role}</span><p>${esc(line)}</p></div>`).join("") + `</div>`
@@ -562,13 +581,12 @@ function renderClientAstImport(c) {
 }
 
 function renderPrescreenRow(q, qi) {
-  const answers = (q.answers && q.answers.length ? q.answers : [{ label: "", slug: "", expected: true }])
+  const answers = (q.answers && q.answers.length ? q.answers : [{ label: "", slug: "", fallback: false }])
     .map((a) => `
       <div class="pa-row">
         <input class="pa-label" placeholder="Answer (e.g. Yes)" value="${esc(a.label || "")}">
         <input class="pa-slug mono" placeholder="tag slug (opt-… / grp-…)" value="${esc(a.slug || "")}">
-        <label class="pa-exp"><input type="checkbox" class="pa-expected" ${a.expected ? "checked" : ""}> expected</label>
-        <label class="pa-exp"><input type="checkbox" class="pa-unclear" ${a.unclear ? "checked" : ""}> unclear</label>
+        <label class="pa-exp" title="If the bot can't tell what they answered, this row's slug is sent"><input type="checkbox" class="pa-fallback" ${a.fallback ? "checked" : ""}> fallback</label>
         <button class="pa-del" title="Remove answer">×</button>
       </div>`)
     .join("");
@@ -580,7 +598,7 @@ function renderPrescreenRow(q, qi) {
       </div>
       <div class="pa-list">${answers}</div>
       <button class="pa-add btn ghost small">+ Add answer</button>
-      <p class="pq-hint">Tip: add one row marked <strong>unclear</strong> with its own slug — if the bot can't tell what they answered, that slug gets sent instead of guessing.</p>
+      <p class="pq-hint">Mark one row <strong>fallback</strong> — if the bot can't tell what they answered, that slug is sent instead of guessing.</p>
     </div>`;
 }
 
@@ -595,8 +613,7 @@ function bindPrescreenRow(row) {
       <div class="pa-row">
         <input class="pa-label" placeholder="Answer (e.g. No)">
         <input class="pa-slug mono" placeholder="tag slug (opt-… / grp-…)">
-        <label class="pa-exp"><input type="checkbox" class="pa-expected"> expected</label>
-        <label class="pa-exp"><input type="checkbox" class="pa-unclear"> unclear</label>
+        <label class="pa-exp" title="If the bot can't tell what they answered, this row's slug is sent"><input type="checkbox" class="pa-fallback"> fallback</label>
         <button class="pa-del" title="Remove answer">×</button>
       </div>`);
     bindAnswerDeletes(row);
@@ -618,12 +635,7 @@ function collectPrescreen() {
       const label = ar.querySelector(".pa-label").value.trim();
       const slug = ar.querySelector(".pa-slug").value.trim();
       if (!label && !slug) return;
-      answers.push({
-        label,
-        slug,
-        expected: ar.querySelector(".pa-expected").checked,
-        unclear: ar.querySelector(".pa-unclear").checked,
-      });
+      answers.push({ label, slug, fallback: ar.querySelector(".pa-fallback").checked });
     });
     out.push({ id: "q_" + Math.random().toString(36).slice(2, 8), question, answers });
   });
@@ -708,24 +720,33 @@ $("#btnSaveSettings").addEventListener("click", async () => {
   }
 });
 
-/* changes modal */
-$("#btnChanges").addEventListener("click", async () => {
-  $("#changesModal").hidden = false;
-  const list = $("#activityList");
-  list.innerHTML = "";
+/* changes — full page table */
+async function showChanges() {
+  // switch to the changes view (hide others)
+  document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
+  document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+  $("#view-changes").classList.add("active");
+  const tb = $("#changesRows");
+  tb.innerHTML = "";
   try {
-    const acts = await (await fetch("/api/activity?limit=200")).json();
-    $("#activityEmpty").style.display = acts.length ? "none" : "block";
-    list.innerHTML = acts
+    const acts = await (await fetch("/api/activity?limit=500")).json();
+    $("#changesEmpty").style.display = acts.length ? "none" : "block";
+    $("#changesCount").textContent = acts.length ? acts.length + " entries" : "";
+    tb.innerHTML = acts
       .map((a) => {
         const when = new Date(a.at).toLocaleString([], {
-          month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+          year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
         });
-        return `<li><span class="act-msg">${esc(a.message)}</span><span class="act-when">${when}</span></li>`;
+        return `<tr>
+          <td>${esc(a.message)}</td>
+          <td><span class="chg-type">${esc((a.type || "").replace(/_/g, " "))}</span></td>
+          <td class="mono">${when}</td>
+        </tr>`;
       })
       .join("");
   } catch {}
-});
+}
+$("#btnChanges").addEventListener("click", showChanges);
 
 /* close any modal via the × or clicking the backdrop */
 document.querySelectorAll(".modal-backdrop").forEach((m) => {
@@ -751,7 +772,7 @@ async function refreshCalls() {
           <td>${who}</td>
           <td>${esc(c.clientName)}</td>
           <td class="mono">${c.attempt}</td>
-          <td><span class="badge ${c.disposition}">${c.disposition.replace(/_/g, " ")}</span></td>
+          <td><span class="badge ${c.disposition}">${dispoLabel(c.disposition)}</span></td>
           <td class="mono">${c.astDelivery === "delivered" ? "✓" : "—"}</td>
         </tr>`;
       })
@@ -769,7 +790,7 @@ $("#callRows").addEventListener("click", async (e) => {
   const who = ((call.candidate.firstName || "") + " " + (call.candidate.lastName || "")).trim();
   d.innerHTML = `
     <h2>${esc(who || call.candidate.phone)}</h2>
-    <div class="detail-meta">${esc(call.clientName)} · ${esc(call.candidate.position)} · attempt ${call.attempt} · ${call.durationSeconds}s · <span class="badge ${call.disposition}">${call.disposition.replace(/_/g, " ")}</span></div>
+    <div class="detail-meta">${esc(call.clientName)} · ${esc(call.candidate.position)} · attempt ${call.attempt} · ${call.durationSeconds}s · <span class="badge ${call.disposition}">${dispoLabel(call.disposition)}</span></div>
     <div class="summary-block">${esc(call.summary)}</div>
     ${call.transcript.length
       ? `<div class="transcript">` +

@@ -107,6 +107,17 @@ function logActivity(type, message) {
   // caller is responsible for saveDb (usually already saving right after)
 }
 
+// Canonical disposition labels (new set as of Batch 4F).
+const DISPOSITION_LABELS = {
+  answered: "Answered",
+  answered_prescreen: "Answered – Pre-Screen",
+  prescreen_unclear: "Pre-Screen Unclear",
+  no_answer: "No Answer",
+};
+function dispositionLabel(d) {
+  return DISPOSITION_LABELS[d] || String(d || "").replace(/_/g, " ");
+}
+
 /* ------------------------------ seed data ------------------------------- */
 
 if (db.clients.length === 0) {
@@ -146,18 +157,18 @@ if (db.clients.length === 0) {
           id: "q_age",
           question: "Just to confirm, are you at least 21 years old?",
           answers: [
-            { label: "Yes", slug: "opt-age21-yes", expected: true, unclear: false },
-            { label: "No", slug: "opt-age21-no", expected: false, unclear: false },
-            { label: "Unclear", slug: "opt-age21-review", expected: false, unclear: true },
+            { label: "Yes", slug: "opt-age21-yes" },
+            { label: "No", slug: "opt-age21-no" },
+            { label: "Unclear / no answer", slug: "opt-age21-review", fallback: true },
           ],
         },
         {
           id: "q_felony",
           question: "Have you ever been convicted of a felony?",
           answers: [
-            { label: "No", slug: "opt-felony-no", expected: true, unclear: false },
-            { label: "Yes", slug: "opt-felony-yes", expected: false, unclear: false },
-            { label: "Unclear", slug: "opt-felony-review", expected: false, unclear: true },
+            { label: "No", slug: "opt-felony-no" },
+            { label: "Yes", slug: "opt-felony-yes" },
+            { label: "Unclear / no answer", slug: "opt-felony-review", fallback: true },
           ],
         },
       ],
@@ -170,12 +181,11 @@ if (db.clients.length === 0) {
   const firsts = ["Jordan", "Casey", "Riley", "Sam", "Alex", "Taylor", "Devin", "Morgan", "Jamie", "Avery", "Quinn", "Drew"];
   const lasts = ["Reyes", "Foster", "Hayes", "Carter", "Nguyen", "Brooks", "Diaz", "Patel", "Okafor", "Reed"];
   const outcomes = [
-    { d: "interested", w: 6, s: "Candidate confirmed continued interest and asked about shift schedule. Agreed to a recruiter follow-up.", conv: true },
-    { d: "interested", w: 5, s: "Enthusiastic; asked about the academy timeline. Wants to move forward.", conv: true },
-    { d: "voicemail", w: 4, s: "No answer — left a brief voicemail introducing the opportunity.", conv: false },
-    { d: "no_answer", w: 3, s: "", conv: false },
-    { d: "callback_requested", w: 2, s: "Was driving; asked to be called back this evening.", conv: true },
-    { d: "not_interested", w: 2, s: "Politely declined — took another position.", conv: true },
+    { d: "answered_prescreen", w: 7, s: "Answered and completed the pre-screen cleanly. Confirmed age and background; agreed to a recruiter follow-up.", conv: true },
+    { d: "answered_prescreen", w: 5, s: "Went through both pre-screen questions with clear answers. Strong candidate.", conv: true },
+    { d: "answered", w: 4, s: "Answered and confirmed interest. Recruiter follow-up scheduled.", conv: true },
+    { d: "prescreen_unclear", w: 3, s: "Answered but one pre-screen response was unclear — flagged for human review.", conv: true },
+    { d: "no_answer", w: 4, s: "No answer. Retry scheduled per client policy.", conv: false },
   ];
   const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
   const weighted = [];
@@ -203,8 +213,8 @@ if (db.clients.length === 0) {
         ? [
             ["agent", `Hi, is this ${fn}? This is the recruiting assistant for Demo County Sheriff's Office about the Corrections Officer application you submitted.`],
             ["candidate", "Oh yeah, hi."],
-            ["agent", "We like to reach out while it's fresh. Are you still interested in the position?"],
-            ["candidate", o.d === "not_interested" ? "Actually I just accepted something else, but thank you." : "Yes, definitely."],
+            ["agent", "Mind if I ask a couple of quick questions?"],
+            ["candidate", o.d === "prescreen_unclear" ? "Um, I'm kind of busy, can you call back?" : "Sure."],
           ]
         : [],
       durationSeconds: conv ? 40 + Math.floor(Math.random() * 120) : 0,
@@ -216,6 +226,24 @@ if (db.clients.length === 0) {
   // newest first
   seededCalls.sort((a, b) => new Date(b.endedAt) - new Date(a.endedAt));
   db.calls.push(...seededCalls);
+
+  // Backfill the changelog with the real build milestones so the Changes page
+  // reflects the project history, not just events since logging was added.
+  const changelogSeed = [
+    ["2026-09-06T14:10:00Z", "build", "First Ring v0.1 prototype created — instant-call console with simulated dialing"],
+    ["2026-09-06T15:30:00Z", "build", "AST submission hook + per-client agent config + call log established"],
+    ["2026-09-10T13:00:00Z", "build", "Deployed to Render; real outbound calls wired via Vapi (Batch 3)"],
+    ["2026-09-10T18:00:00Z", "build", "AST reskin, theme system, Settings & Changes added (Batch 4A)"],
+    ["2026-09-10T18:30:00Z", "build", "Client panel/table views + live call stats (Batch 4B)"],
+    ["2026-09-10T19:00:00Z", "build", "Per-client Settings / Analytics / Call log tabs (Batch 4C)"],
+    ["2026-09-10T20:00:00Z", "build", "Real table + detail pages, HTML embed, AST App Import (Batch 4D)"],
+    ["2026-09-10T21:30:00Z", "build", "Pre-screen runtime, full changelog, seeded demo client (Batch 4E)"],
+    ["2026-09-10T22:30:00Z", "build", "Changes page, tenant delete, disposition overhaul (Batch 4F)"],
+  ];
+  for (const [at, type, message] of changelogSeed) {
+    db.activity.push({ id: id("act"), type, message, at });
+  }
+  db.activity.sort((a, b) => new Date(b.at) - new Date(a.at));
 
   logActivity("seed", "Demo client and sample call history seeded");
   saveDb(db);
@@ -539,55 +567,51 @@ setInterval(() => {
 
 const SIM_OUTCOMES = [
   {
-    weight: 45,
-    disposition: "interested",
+    weight: 42,
+    disposition: "answered_prescreen",
     summary:
-      "Candidate confirmed continued interest. Asked about salary and shift schedule; agent answered from the client fact sheet. Candidate agreed to a recruiter follow-up call.",
+      "Candidate answered and completed the pre-screen. Confirmed interest, answered the qualifying questions, and agreed to a recruiter follow-up.",
     transcript: (c, client) => [
       ["agent", `Hi, is this ${c.firstName || "there"}? This is the recruitment assistant for ${client.name}, calling about the ${c.position} application you just submitted.`],
       ["candidate", "Oh yeah, hi. That was fast."],
-      ["agent", "We like to reach out while it's fresh. Are you still interested in the position?"],
-      ["candidate", "Yeah, definitely. What's the starting pay again?"],
-      ["agent", "Starting salary is $48,500 with step increases, and the academy is paid. Shifts are 12-hour rotations with overtime available."],
-      ["candidate", "Okay, that works for me."],
-      ["agent", "Great. A recruiter will reach out shortly with next steps, including the exam date. Anything else I can answer right now?"],
-      ["candidate", "No, I think I'm good. Thanks."],
-      ["agent", "Thanks for applying — talk soon."],
+      ["agent", "We like to reach out while it's fresh. Mind if I ask a couple quick questions?"],
+      ["candidate", "Sure, go ahead."],
+      ["agent", "Just to confirm, are you at least 21 years old?"],
+      ["candidate", "Yep, I'm 27."],
+      ["agent", "Great. And have you ever been convicted of a felony?"],
+      ["candidate", "No, never."],
+      ["agent", "Perfect. A recruiter will reach out shortly with next steps. Thanks for applying!"],
     ],
   },
   {
-    weight: 20,
-    disposition: "voicemail",
-    summary: "No answer; left a voicemail confirming receipt of the application and noting a recruiter will follow up.",
+    weight: 30,
+    disposition: "answered",
+    summary: "Candidate answered and confirmed interest. No pre-screen configured for this client, so it was a confirmation call.",
     transcript: (c, client) => [
-      ["agent", `Hi ${c.firstName || ""}, this is the recruitment team for ${client.name}. We received your application for ${c.position} and wanted to connect. A recruiter will follow up soon — feel free to call us back at this number.`],
+      ["agent", `Hi, is this ${c.firstName || "there"}? This is the recruitment assistant for ${client.name}, calling about the ${c.position} application you just submitted.`],
+      ["candidate", "Yeah, hi."],
+      ["agent", "We wanted to reach out while it's fresh — are you still interested in the position?"],
+      ["candidate", "Yeah, definitely."],
+      ["agent", "Great. A recruiter will follow up shortly with next steps. Thanks for applying!"],
     ],
   },
   {
-    weight: 15,
+    weight: 12,
+    disposition: "prescreen_unclear",
+    summary: "Candidate answered but at least one pre-screen response was unclear. Flagged for human review.",
+    transcript: (c, client) => [
+      ["agent", `Hi, is this ${c.firstName || "there"}? Calling from ${client.name} about your ${c.position} application.`],
+      ["candidate", "Uh, yeah, but I'm kind of in the middle of something."],
+      ["agent", "No problem, just one quick thing — are you at least 21 years old?"],
+      ["candidate", "I mean… it depends, can I call you back?"],
+      ["agent", "Of course. A recruiter will follow up. Thanks!"],
+    ],
+  },
+  {
+    weight: 16,
     disposition: "no_answer",
-    summary: "No answer and no voicemail available. Retry scheduled per client policy.",
+    summary: "No answer. Retry scheduled per client policy.",
     transcript: () => [],
-  },
-  {
-    weight: 10,
-    disposition: "callback_requested",
-    summary: "Candidate answered but was at work; asked to be called back tomorrow morning.",
-    transcript: (c, client) => [
-      ["agent", `Hi, is this ${c.firstName || "there"}? Calling from ${client.name} about your ${c.position} application.`],
-      ["candidate", "Hey — I'm at work right now, can you call me tomorrow morning?"],
-      ["agent", "Of course. We'll reach out tomorrow morning. Thanks for applying."],
-    ],
-  },
-  {
-    weight: 10,
-    disposition: "not_interested",
-    summary: "Candidate said they already accepted another position. Marked not interested.",
-    transcript: (c, client) => [
-      ["agent", `Hi, is this ${c.firstName || "there"}? Calling from ${client.name} about your ${c.position} application.`],
-      ["candidate", "Oh — I actually just took another job. Sorry."],
-      ["agent", "No problem at all. We appreciate you letting us know, and good luck in the new role."],
-    ],
   },
 ];
 
@@ -637,11 +661,11 @@ async function finalizeCall(job, result) {
   job.status = "done";
   job.callId = call.id;
   const who = (job.candidate.firstName || "Candidate") + " " + (job.candidate.lastName || "");
-  logActivity("call_completed", `Call to ${who.trim()} (${call.clientName}): ${call.disposition.replace(/_/g, " ")}`);
+  logActivity("call_completed", `Call to ${who.trim()} (${call.clientName}): ${dispositionLabel(call.disposition)}`);
 
-  // Retry policy (unchanged: no-answer / callback re-queues per client rules)
+  // Retry policy: only re-dial when nobody picked up.
   if (
-    (result.disposition === "no_answer" || result.disposition === "callback_requested") &&
+    result.disposition === "no_answer" &&
     client && job.attempt < (client.maxAttempts || 2)
   ) {
     const retry = enqueueCall(client, job.candidate, job.attempt + 1);
@@ -692,10 +716,10 @@ async function finalizeCall(job, result) {
         slugs.push(match.slug);
         mapped.push(`${q.question} → ${match.label}`);
       } else {
-        // unclear / no match → use the answer row flagged as the "unclear" slug
-        const unclear = (q.answers || []).find((a) => a.unclear && a.slug);
-        if (unclear) {
-          slugs.push(unclear.slug);
+        // unclear / no match → use the answer row flagged as the fallback
+        const fb = (q.answers || []).find((a) => a.fallback && a.slug);
+        if (fb) {
+          slugs.push(fb.slug);
           mapped.push(`${q.question} → unclear`);
         }
       }
@@ -867,24 +891,50 @@ function mapVapiReport(msg) {
 
   const durationSeconds = Math.round(msg.durationSeconds || call.durationSeconds || 0);
 
-  // Disposition: prefer a structured value if you configure Vapi analysis
-  // (Job 2), otherwise derive a sensible one from how the call ended.
+  // Disposition (new set): No Answer if nobody picked up; otherwise based on
+  // whether this client has pre-screen questions and whether they were answered.
   const structured = (msg.analysis && msg.analysis.structuredData) || null;
-  let disposition = "completed";
-  if (structured && structured.disposition) {
-    disposition = structured.disposition;
-  } else if (endedReason.includes("no-answer") || endedReason.includes("did-not-answer") || endedReason.includes("busy")) {
+  const noPickup =
+    endedReason.includes("no-answer") ||
+    endedReason.includes("did-not-answer") ||
+    endedReason.includes("voicemail") ||
+    endedReason.includes("busy") ||
+    endedReason.includes("customer-did-not-answer");
+
+  const client = findClientForJobId(msg);
+  const hasPrescreen = !!(client && client.astImport && (client.astImport.prescreen || []).length);
+
+  let disposition;
+  if (noPickup) {
     disposition = "no_answer";
-  } else if (endedReason.includes("voicemail")) {
-    disposition = "voicemail";
+  } else if (hasPrescreen) {
+    // answered + pre-screen exists: unclear if any answer is missing/"unclear"
+    const n = client.astImport.prescreen.length;
+    let unclear = false;
+    for (let i = 1; i <= n; i++) {
+      const v = String((structured && structured[`q${i}`]) || "").trim().toLowerCase();
+      if (!v || v === "unclear") { unclear = true; break; }
+    }
+    disposition = unclear ? "prescreen_unclear" : "answered_prescreen";
+  } else {
+    disposition = "answered";
   }
 
   // Pre-screen answers: our schema returns them as top-level keys q1, q2, …
-  // so the whole structured object IS the answers map. (disposition, if present,
-  // is handled above and harmless to leave in.)
   const answers = structured || undefined;
 
   return { simulated: false, disposition, summary, transcript, durationSeconds, answers };
+}
+
+// Resolve the client for a Vapi report (via job metadata) so mapVapiReport can
+// tell whether pre-screen was configured.
+function findClientForJobId(msg) {
+  const call = msg.call || {};
+  const jobId = call.metadata && call.metadata.jobId;
+  let job = jobId ? db.queue.find((j) => j.id === jobId) : null;
+  if (!job && call.id) job = db.queue.find((j) => j.vapiCallId === call.id);
+  if (!job) return null;
+  return db.clients.find((c) => c.id === job.clientId) || null;
 }
 
 /* -------------------- Vapi end-of-call webhook -------------------------- */
@@ -944,9 +994,11 @@ app.get("/api/clients/:id/calls", (req, res) => {
 app.get("/api/clients/:id/analytics", (req, res) => {
   const calls = db.calls.filter((c) => c.clientId === req.params.id);
   const total = calls.length;
-  const answeredDispositions = ["interested", "completed", "callback_requested", "not_interested"];
+  const answeredDispositions = ["answered", "answered_prescreen", "prescreen_unclear"];
   const answered = calls.filter((c) => answeredDispositions.includes(c.disposition));
-  const interested = calls.filter((c) => c.disposition === "interested");
+  // "pre-screen completed" = answered AND pre-screen came through cleanly
+  const prescreenDone = calls.filter((c) => c.disposition === "answered_prescreen");
+  const prescreenEligible = calls.filter((c) => c.disposition === "answered_prescreen" || c.disposition === "prescreen_unclear");
 
   // disposition breakdown
   const byDisposition = {};
@@ -975,8 +1027,9 @@ app.get("/api/clients/:id/analytics", (req, res) => {
     total,
     answered: answered.length,
     connectRate: total ? Math.round((answered.length / total) * 100) : 0,
-    interested: interested.length,
-    interestRate: total ? Math.round((interested.length / total) * 100) : 0,
+    prescreenDone: prescreenDone.length,
+    // % of answered pre-screen calls that came through clearly (vs unclear)
+    prescreenClearRate: prescreenEligible.length ? Math.round((prescreenDone.length / prescreenEligible.length) * 100) : null,
     avgDuration,
     avgAttempts,
     byDisposition,

@@ -74,6 +74,7 @@
         <h2 id="detailName">Client</h2>
         <p class="detail-sub" id="detailSub"></p>
       </div>
+      <button class="btn danger" id="btnDeleteTenant">Delete client</button>
     </div>
     <div class="ctabs" role="tablist">
       <button class="ctab active" data-ctab="settings">Settings</button>
@@ -109,6 +110,21 @@
   </div>
 </section>
 
+<!-- ============================= CHANGES ============================= -->
+<section id="view-changes" class="view">
+  <div class="card changes-card">
+    <div class="list-head">
+      <h2>Changes</h2>
+      <span class="hint mono" id="changesCount"></span>
+    </div>
+    <table class="changes-table">
+      <thead><tr><th>What</th><th>Type</th><th>When</th></tr></thead>
+      <tbody id="changesRows"></tbody>
+    </table>
+    <p class="empty" id="changesEmpty">No activity yet.</p>
+  </div>
+</section>
+
 </main>
 
 <!-- ============================ SETTINGS MODAL ============================ -->
@@ -139,20 +155,6 @@
     <div class="modal-foot">
       <span class="save-note" id="settingsNote"></span>
       <button class="btn" id="btnSaveSettings">Save</button>
-    </div>
-  </div>
-</div>
-
-<!-- ============================ CHANGES MODAL ============================ -->
-<div class="modal-backdrop" id="changesModal" hidden>
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="changesTitle">
-    <div class="modal-head">
-      <h2 id="changesTitle">Changes</h2>
-      <button class="modal-x" data-close aria-label="Close">×</button>
-    </div>
-    <div class="modal-body">
-      <ul class="activity" id="activityList"></ul>
-      <p class="empty" id="activityEmpty">No activity yet.</p>
     </div>
   </div>
 </div>
