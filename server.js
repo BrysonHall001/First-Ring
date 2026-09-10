@@ -76,6 +76,16 @@ function loadDb() {
   // Migrate older db files that predate settings/activity.
   if (!d.settings) d.settings = { displayName: "", userName: "", theme: "blue" };
   if (!Array.isArray(d.activity)) d.activity = [];
+  for (const c of d.clients || []) {
+    if (!c.astImport) {
+      c.astImport = {
+        embedKey: "",
+        zapierUrl: "https://app.allstarrecruiter.com/candidate/intake/leadformzapier",
+        origin: "",
+        prescreen: [],
+      };
+    }
+  }
   return d;
 }
 
@@ -167,6 +177,13 @@ app.post("/api/clients", (req, res) => {
     astWebhookUrl: req.body.astWebhookUrl || "",
     instructions: req.body.instructions || "",
     knowledgeDocs: [],
+    // AST App Import: EmbedKey + Zapier endpoint + pre-screen answer→slug mappings
+    astImport: {
+      embedKey: "",
+      zapierUrl: "https://app.allstarrecruiter.com/candidate/intake/leadformzapier",
+      origin: "",
+      prescreen: [], // [{ id, question, answers:[{label, slug, expected:bool}] }]
+    },
     createdAt: new Date().toISOString(),
   };
   db.clients.push(c);
@@ -181,11 +198,12 @@ app.put("/api/clients/:id", (req, res) => {
   const fields = [
     "name", "position", "outboundNumber", "instantCall", "callWindowStart",
     "callWindowEnd", "timezone", "maxAttempts", "retryDelayMinutes",
-    "astWebhookUrl", "instructions",
+    "astWebhookUrl", "instructions", "astImport",
   ];
   for (const f of fields) if (f in req.body) c[f] = req.body[f];
   c.maxAttempts = Number(c.maxAttempts) || 2;
   c.retryDelayMinutes = Number(c.retryDelayMinutes) || 120;
+  if (!c.astImport) c.astImport = { embedKey: "", zapierUrl: "", origin: "", prescreen: [] };
   logActivity("client_updated", `Client updated: ${c.name}`);
   saveDb(db);
   res.json(c);
@@ -298,6 +316,52 @@ app.post("/api/hooks/submission", (req, res) => {
 
   const job = enqueueCall(client, candidate, 1);
   res.status(202).json({ queued: true, jobId: job.id, scheduledFor: job.dueAt });
+});
+
+/* ------------------- Webflow embed: public form submit ------------------- */
+/*
+ * The per-client HTML snippet (see the "HTML embed" tab) posts here from the
+ * client's Webflow site. CORS is open because it's called cross-origin from
+ * the browser. This queues a call exactly like the AST hook, but needs no
+ * shared key (it's a public lead form) — instead it's scoped to one client id.
+ */
+app.options("/api/embed/:clientId/submit", (req, res) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.set("Access-Control-Allow-Headers", "Content-Type");
+  res.sendStatus(204);
+});
+
+app.post("/api/embed/:clientId/submit", (req, res) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  const client = db.clients.find((x) => x.id === req.params.clientId);
+  if (!client) return res.status(404).json({ error: "Unknown form" });
+
+  // honeypot: bots fill hidden fields; humans don't
+  if (req.body.company_website) return res.json({ ok: true });
+
+  const candidate = {
+    firstName: (req.body.firstName || "").trim(),
+    lastName: (req.body.lastName || "").trim(),
+    phone: (req.body.phone || "").trim(),
+    position: (req.body.position || client.position || "").trim(),
+    astRecordId: null,
+    phoneOptIn: req.body.phoneOptIn === true || req.body.phoneOptIn === "true",
+    phoneOptInAt: new Date().toISOString(),
+  };
+  if (!candidate.phone) return res.status(400).json({ error: "Phone is required" });
+
+  // Only dial if they ticked the phone-call opt-in (consent) and calls are on.
+  if (!candidate.phoneOptIn) {
+    logActivity("lead_no_optin", `Lead ${candidate.firstName} ${candidate.lastName} (${client.name}) submitted without phone opt-in`);
+    saveDb(db);
+    return res.json({ ok: true, queued: false, reason: "no phone opt-in" });
+  }
+  if (!client.instantCall) {
+    return res.json({ ok: true, queued: false, reason: "instant call off" });
+  }
+  const job = enqueueCall(client, candidate, 1);
+  res.status(202).json({ ok: true, queued: true, jobId: job.id });
 });
 
 function enqueueCall(client, candidate, attempt) {

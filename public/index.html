@@ -32,38 +32,59 @@
 <nav class="tabs" role="tablist">
   <button class="tab active" data-view="clients" role="tab">Clients</button>
   <button class="tab" data-view="calls" role="tab">Call log</button>
-  <button class="tab" data-view="setup" role="tab">AST setup</button>
 </nav>
 
 <main>
 
 <!-- ============================ CLIENTS ============================ -->
 <section id="view-clients" class="view active">
-  <div class="clients-toolbar">
-    <div class="view-toggle" role="group" aria-label="Client list view">
-      <button class="vt-btn active" id="vtPanels" data-clientview="panels">Panels</button>
-      <button class="vt-btn" id="vtTable" data-clientview="table">Table</button>
-    </div>
-    <button class="btn small" id="btnNewClientTop">Add client</button>
-  </div>
 
-  <!-- PANEL VIEW -->
-  <div id="clientPanels" class="client-panels"></div>
-
-  <!-- TABLE (split editor) VIEW -->
-  <div class="split" id="clientSplit" hidden>
-    <aside class="client-list">
-      <div class="list-head">
-        <h2>Clients</h2>
-        <button class="btn small" id="btnNewClient">Add client</button>
+  <!-- LIST MODE (panels or table) -->
+  <div id="clientListMode">
+    <div class="clients-toolbar">
+      <div class="view-toggle" role="group" aria-label="Client list view">
+        <button class="vt-btn active" id="vtPanels" data-clientview="panels">Panels</button>
+        <button class="vt-btn" id="vtTable" data-clientview="table">Table</button>
       </div>
-      <ul id="clientList"></ul>
-    </aside>
+      <button class="btn small" id="btnNewClientTop">Add client</button>
+    </div>
 
-    <div class="client-editor" id="clientEditor">
-      <p class="empty">Select a client to edit its agent, or add a new one.</p>
+    <!-- PANELS -->
+    <div id="clientPanels" class="client-panels"></div>
+
+    <!-- REAL TABLE -->
+    <div id="clientTableWrap" class="card table-card" hidden>
+      <table class="client-table">
+        <thead>
+          <tr>
+            <th>Client</th><th>Position</th><th>Calls</th>
+            <th>Live now</th><th>Total calls</th><th>Queued</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="clientTableRows"></tbody>
+      </table>
     </div>
   </div>
+
+  <!-- DETAIL MODE (one client, standalone) -->
+  <div id="clientDetailMode" hidden>
+    <button class="back-link" id="btnBackToList">← All clients</button>
+    <div class="detail-header">
+      <div>
+        <h2 id="detailName">Client</h2>
+        <p class="detail-sub" id="detailSub"></p>
+      </div>
+    </div>
+    <div class="ctabs" role="tablist">
+      <button class="ctab active" data-ctab="settings">Settings</button>
+      <button class="ctab" data-ctab="analytics">Analytics</button>
+      <button class="ctab" data-ctab="calllog">Call log</button>
+      <button class="ctab" data-ctab="embed">HTML embed</button>
+      <button class="ctab" data-ctab="astimport">AST App Import</button>
+    </div>
+    <div class="ctab-body card" id="ctabBody"></div>
+  </div>
+
 </section>
 
 <!-- ============================= CALLS ============================= -->
@@ -88,32 +109,6 @@
   </div>
 </section>
 
-<!-- ============================= SETUP ============================= -->
-<section id="view-setup" class="view">
-  <div class="setup card">
-    <h2>Wiring this into the AST app</h2>
-    <p>The AST developer adds one outbound request and one inbound endpoint. That's the whole integration.</p>
-
-    <h3>1 · When a form with instant-call enabled receives a submission, AST calls:</h3>
-    <pre class="code" id="curlIn"></pre>
-    <p class="hint">Authenticated with the <span class="mono">X-AST-Key</span> header (<span class="mono" id="keyHint"></span>). The call is queued and dialed within the client's calling window.</p>
-
-    <h3>2 · When the call ends, this server posts the result to the client's <em>AST webhook URL</em> (set per client):</h3>
-    <pre class="code">POST {your AST endpoint}
-Header  X-AST-Key: {same shared key}
-
-{
-  "astRecordId": "the candidate record to update",
-  "callId": "call_ab12cd34ef",
-  "disposition": "interested | voicemail | no_answer | callback_requested | not_interested",
-  "summary": "Three-sentence recap written for the recruiter",
-  "attempt": 1,
-  "endedAt": "2026-08-26T14:03:22.000Z"
-}</pre>
-    <p class="hint">AST writes those fields onto the candidate entry — same reporting, new columns.</p>
-  </div>
-</section>
-
 </main>
 
 <!-- ============================ SETTINGS MODAL ============================ -->
@@ -125,14 +120,9 @@ Header  X-AST-Key: {same shared key}
     </div>
     <div class="modal-body">
       <div class="field">
-        <label for="s_displayName">Workspace name</label>
-        <input type="text" id="s_displayName" placeholder="e.g. All-Star Talent">
-        <div class="sub">Shown in the header.</div>
-      </div>
-      <div class="field">
         <label for="s_userName">Your name</label>
         <input type="text" id="s_userName" placeholder="e.g. Bryson">
-        <div class="sub">Used for the greeting.</div>
+        <div class="sub">Used for the greeting. (Logins &amp; more settings coming later.)</div>
       </div>
       <div class="field">
         <label>Theme</label>

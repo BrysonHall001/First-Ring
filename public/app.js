@@ -3,6 +3,7 @@ let selectedClientId = null;
 let selectedCallId = null;
 let clientView = "panels"; // "panels" | "table"
 let clientStats = {};
+let clientTab = "settings"; // settings | analytics | calllog | embed | astimport
 
 const $ = (s) => document.querySelector(s);
 
@@ -21,26 +22,51 @@ document.querySelectorAll(".tab").forEach((t) => {
 
 async function loadClients() {
   clients = await (await fetch("/api/clients")).json();
-  renderClientList();
   renderClientPanels();
-  if (selectedClientId && !clients.find((c) => c.id === selectedClientId)) {
-    selectedClientId = null;
-    $("#clientEditor").innerHTML = '<p class="empty">Select a client to edit its agent, or add a new one.</p>';
-  }
+  renderClientTable();
 }
 
-/* -------- view toggle (panels vs table) -------- */
+/* -------- list mode: panels vs real table -------- */
 function setClientView(mode) {
   clientView = mode;
   $("#clientPanels").hidden = mode !== "panels";
-  $("#clientSplit").hidden = mode !== "table";
+  $("#clientTableWrap").hidden = mode !== "table";
   $("#vtPanels").classList.toggle("active", mode === "panels");
   $("#vtTable").classList.toggle("active", mode === "table");
 }
 $("#vtPanels").addEventListener("click", () => setClientView("panels"));
 $("#vtTable").addEventListener("click", () => setClientView("table"));
 
-/* -------- panel cards with live call state -------- */
+/* -------- switch between the list and a single client's detail page -------- */
+function showListMode() {
+  selectedClientId = null;
+  $("#clientListMode").hidden = false;
+  $("#clientDetailMode").hidden = true;
+}
+function openClientDetail(cid) {
+  const c = clients.find((x) => x.id === cid);
+  if (!c) return;
+  selectedClientId = cid;
+  clientTab = "settings";
+  $("#clientListMode").hidden = true;
+  $("#clientDetailMode").hidden = false;
+  $("#detailName").textContent = c.name;
+  $("#detailSub").textContent = (c.instantCall ? "Instant call on" : "Instant call off");
+  document.querySelectorAll("#clientDetailMode .ctab").forEach((t) =>
+    t.classList.toggle("active", t.dataset.ctab === "settings")
+  );
+  renderClientTab(cid);
+}
+$("#btnBackToList").addEventListener("click", () => { showListMode(); loadClients(); });
+document.querySelectorAll("#clientDetailMode .ctab").forEach((t) =>
+  t.addEventListener("click", () => {
+    clientTab = t.dataset.ctab;
+    document.querySelectorAll("#clientDetailMode .ctab").forEach((x) => x.classList.toggle("active", x === t));
+    renderClientTab(selectedClientId);
+  })
+);
+
+/* -------- panel cards -------- */
 function renderClientPanels() {
   const wrap = $("#clientPanels");
   if (!clients.length) {
@@ -50,8 +76,7 @@ function renderClientPanels() {
   wrap.innerHTML = clients
     .map((c) => {
       const s = clientStats[c.id] || { active: 0, queued: 0, total: 0 };
-      const active = s.active > 0;
-      const callState = active
+      const callState = s.active > 0
         ? `<span class="pcard-callstate active"><span class="dot"></span>${s.active} call${s.active > 1 ? "s" : ""} live</span>`
         : (s.queued > 0
             ? `<span class="pcard-callstate active"><span class="dot"></span>${s.queued} queued</span>`
@@ -73,62 +98,48 @@ function renderClientPanels() {
       </button>`;
     })
     .join("");
-  wrap.querySelectorAll(".pcard").forEach((card) => {
-    card.addEventListener("click", () => {
-      setClientView("table");
-      selectClient(card.dataset.client);
-    });
-  });
+  wrap.querySelectorAll(".pcard").forEach((card) =>
+    card.addEventListener("click", () => openClientDetail(card.dataset.client))
+  );
+}
+
+/* -------- real data table -------- */
+function renderClientTable() {
+  const tb = $("#clientTableRows");
+  if (!clients.length) {
+    tb.innerHTML = '<tr><td colspan="7" class="empty">No clients yet.</td></tr>';
+    return;
+  }
+  tb.innerHTML = clients
+    .map((c) => {
+      const s = clientStats[c.id] || { active: 0, queued: 0, total: 0 };
+      const live = s.active > 0
+        ? `<span class="tbl-live active"><span class="dot"></span>${s.active}</span>`
+        : `<span class="tbl-live"><span class="dot"></span>0</span>`;
+      return `<tr data-client="${c.id}">
+        <td class="tbl-name">${esc(c.name)}</td>
+        <td>${esc(c.position || "—")}</td>
+        <td>${c.instantCall ? '<span class="tbl-on">On</span>' : '<span class="tbl-offbadge">Off</span>'}</td>
+        <td>${live}</td>
+        <td class="mono">${s.total}</td>
+        <td class="mono">${s.queued}</td>
+        <td class="tbl-open">Open →</td>
+      </tr>`;
+    })
+    .join("");
+  tb.querySelectorAll("tr[data-client]").forEach((row) =>
+    row.addEventListener("click", () => openClientDetail(row.dataset.client))
+  );
 }
 
 async function refreshClientStats() {
   try {
     clientStats = await (await fetch("/api/client-stats")).json();
-    if (clientView === "panels") renderClientPanels();
+    if (!$("#clientListMode").hidden) {
+      if (clientView === "panels") renderClientPanels();
+      else renderClientTable();
+    }
   } catch {}
-}
-
-function renderClientList() {
-  const ul = $("#clientList");
-  ul.innerHTML = "";
-  for (const c of clients) {
-    const li = document.createElement("li");
-    const b = document.createElement("button");
-    b.className = c.id === selectedClientId ? "selected" : "";
-    b.innerHTML = `${esc(c.name)} ${c.instantCall ? "" : '<span class="off">call off</span>'}<span class="pos">${esc(c.position || "—")}</span>`;
-    b.addEventListener("click", () => selectClient(c.id));
-    li.appendChild(b);
-    ul.appendChild(li);
-  }
-}
-
-let clientTab = "settings"; // settings | analytics | calllog
-let selectedClientCallId = null;
-
-function selectClient(cid) {
-  selectedClientId = cid;
-  clientTab = "settings";
-  selectedClientCallId = null;
-  renderClientList();
-  const c = clients.find((x) => x.id === cid);
-  if (!c) return;
-  const ed = $("#clientEditor");
-  ed.innerHTML = `
-    <div class="ctabs" role="tablist">
-      <button class="ctab active" data-ctab="settings">Settings</button>
-      <button class="ctab" data-ctab="analytics">Analytics</button>
-      <button class="ctab" data-ctab="calllog">Call log</button>
-    </div>
-    <div class="ctab-body" id="ctabBody"></div>
-  `;
-  ed.querySelectorAll(".ctab").forEach((t) =>
-    t.addEventListener("click", () => {
-      clientTab = t.dataset.ctab;
-      ed.querySelectorAll(".ctab").forEach((x) => x.classList.toggle("active", x === t));
-      renderClientTab(cid);
-    })
-  );
-  renderClientTab(cid);
 }
 
 function renderClientTab(cid) {
@@ -136,8 +147,12 @@ function renderClientTab(cid) {
   if (!c) return;
   if (clientTab === "settings") renderClientSettings(c);
   else if (clientTab === "analytics") renderClientAnalytics(c);
-  else renderClientCallLog(c);
+  else if (clientTab === "calllog") renderClientCallLog(c);
+  else if (clientTab === "embed") renderClientEmbed(c);
+  else if (clientTab === "astimport") renderClientAstImport(c);
 }
+
+let selectedClientCallId = null;
 
 /* ------------------------------ SETTINGS tab ----------------------------- */
 function renderClientSettings(c) {
@@ -173,7 +188,7 @@ function renderClientSettings(c) {
       <p class="hint" id="uploadStatus"></p>
     </div>
 
-    <details class="adv" open>
+    <details class="adv">
       <summary>Calling &amp; retry</summary>
       <div class="row2" style="margin-top:12px">
         <div class="field">
@@ -188,16 +203,6 @@ function renderClientSettings(c) {
         <div class="field"><label for="f_maxAttempts">Max attempts</label><input type="number" id="f_maxAttempts" min="1" max="5" value="${c.maxAttempts}"></div>
         <div class="field"><label for="f_retryDelayMinutes">Retry delay (min)</label><input type="number" id="f_retryDelayMinutes" min="5" step="5" value="${c.retryDelayMinutes}"></div>
       </div>
-    </details>
-
-    <details class="adv">
-      <summary>AST app integration</summary>
-      <div class="field" style="margin-top:12px">
-        <label for="f_astWebhookUrl">AST webhook URL (call results post here)</label>
-        <input type="url" id="f_astWebhookUrl" value="${esc(c.astWebhookUrl)}" placeholder="https://ast.yourcompany.com/api/call-results">
-        <div class="sub">When a call ends, First Ring posts the disposition, summary, and (later) pre-screen answers to this URL so AST updates the candidate record. Authenticated with the shared <span class="mono">X-AST-Key</span>.</div>
-      </div>
-      <p class="hint">Client ID for the AST submission hook: <span class="mono">${cid}</span></p>
     </details>
 
     <div class="editor-actions">
@@ -216,7 +221,6 @@ function renderClientSettings(c) {
     const payload = {
       name: $("#f_name").value,
       outboundNumber: $("#f_outboundNumber").value,
-      astWebhookUrl: $("#f_astWebhookUrl").value,
       instantCall: $("#f_instantCall").checked,
       callWindowStart: $("#f_callWindowStart").value,
       callWindowEnd: $("#f_callWindowEnd").value,
@@ -231,7 +235,12 @@ function renderClientSettings(c) {
     });
     if (res.ok) {
       note("Saved");
-      await loadClients();
+      clients = await (await fetch("/api/clients")).json();
+      const fresh = clients.find((x) => x.id === cid);
+      if (fresh) {
+        $("#detailName").textContent = fresh.name;
+        $("#detailSub").textContent = fresh.instantCall ? "Instant call on" : "Instant call off";
+      }
     } else note("Save failed", true);
   });
 
@@ -249,9 +258,8 @@ function renderClientSettings(c) {
   $("#btnDelete").addEventListener("click", async () => {
     if (!confirm("Delete this client and its agent config?")) return;
     await fetch("/api/clients/" + cid, { method: "DELETE" });
-    selectedClientId = null;
-    $("#clientEditor").innerHTML = '<p class="empty">Select a client to edit its agent, or add a new one.</p>';
-    loadClients();
+    showListMode();
+    await loadClients();
   });
 
   $("#f_file").addEventListener("change", async (e) => {
@@ -391,6 +399,214 @@ async function renderClientCallLog(c) {
   });
 }
 
+/* ------------------------------ HTML EMBED tab --------------------------- */
+function renderClientEmbed(c) {
+  const body = $("#ctabBody");
+  const base = window.location.origin;
+  const snippet = buildEmbedSnippet(c.id, c.name, base);
+  body.innerHTML = `
+    <p class="tab-intro">Drop a <strong>Code / Embed</strong> block into the client's Webflow page and paste this. It renders a lead form that talks directly to First Ring — when someone submits with the phone-call box ticked, First Ring calls them. No AST app or Zapier needed.</p>
+    <div class="field">
+      <label>Webflow embed code</label>
+      <textarea id="embedCode" class="code-area" readonly spellcheck="false">${esc(snippet)}</textarea>
+    </div>
+    <div class="editor-actions">
+      <button class="btn" id="btnCopyEmbed">Copy code</button>
+      <span class="save-note" id="embedNote"></span>
+    </div>
+    <p class="hint">The form posts to <span class="mono">${base}/api/embed/${c.id}/submit</span>. The phone-call opt-in checkbox is the candidate's consent and is stored with the call.</p>
+  `;
+  $("#btnCopyEmbed").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(snippet);
+      const n = $("#embedNote"); n.textContent = "Copied"; n.style.color = "var(--line-green)";
+      setTimeout(() => (n.textContent = ""), 1500);
+    } catch {
+      $("#embedCode").select();
+    }
+  });
+}
+
+function buildEmbedSnippet(cid, name, base) {
+  return `<!-- First Ring lead form for ${name} -->
+<div id="fr-form-${cid}"></div>
+<script>
+(function(){
+  var C = document.getElementById("fr-form-${cid}");
+  C.innerHTML =
+    '<form id="frf-${cid}" style="max-width:520px;font-family:inherit">'
+    + '<input name="firstName" placeholder="First name" required style="display:block;width:100%;margin:0 0 10px;padding:10px;border:1px solid #ccc;border-radius:6px">'
+    + '<input name="lastName" placeholder="Last name" style="display:block;width:100%;margin:0 0 10px;padding:10px;border:1px solid #ccc;border-radius:6px">'
+    + '<input name="phone" placeholder="Phone number" required style="display:block;width:100%;margin:0 0 10px;padding:10px;border:1px solid #ccc;border-radius:6px">'
+    + '<input name="company_website" tabindex="-1" autocomplete="off" style="position:absolute;left:-9999px" aria-hidden="true">'
+    + '<label style="display:flex;gap:8px;align-items:flex-start;margin:0 0 14px;font-size:14px">'
+    + '<input type="checkbox" name="phoneOptIn" style="margin-top:3px">'
+    + '<span>It\\'s okay to call me about this position, including with an automated assistant. Message/data rates may apply.</span></label>'
+    + '<button type="submit" style="padding:11px 18px;border:0;border-radius:6px;background:#3b5b8c;color:#fff;font-weight:600;cursor:pointer">Apply now</button>'
+    + '<p id="frf-msg-${cid}" style="margin:10px 0 0;font-size:14px"></p>'
+    + '</form>';
+  document.getElementById("frf-${cid}").addEventListener("submit", function(e){
+    e.preventDefault();
+    var f = e.target, msg = document.getElementById("frf-msg-${cid}");
+    var body = {
+      firstName: f.firstName.value, lastName: f.lastName.value,
+      phone: f.phone.value, phoneOptIn: f.phoneOptIn.checked,
+      company_website: f.company_website.value
+    };
+    fetch("${base}/api/embed/${cid}/submit", {
+      method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)
+    }).then(function(r){ return r.json(); }).then(function(){
+      msg.textContent = "Thanks! We'll be in touch shortly.";
+      msg.style.color = "#0a7d3f"; f.reset();
+    }).catch(function(){
+      msg.textContent = "Something went wrong. Please try again.";
+      msg.style.color = "#c0392b";
+    });
+  });
+})();
+<\/script>`;
+}
+
+/* --------------------------- AST APP IMPORT tab -------------------------- */
+function renderClientAstImport(c) {
+  const body = $("#ctabBody");
+  const imp = c.astImport || { embedKey: "", zapierUrl: "", origin: "", prescreen: [] };
+  const rows = (imp.prescreen || [])
+    .map((q, qi) => renderPrescreenRow(q, qi))
+    .join("");
+  body.innerHTML = `
+    <p class="tab-intro">Connect this client's calls back to the AST app. The bot asks each pre-screen question in a friendly interview style, and based on the candidate's answer, First Ring sends the matching tag slug to the AST app — no Zapier step.</p>
+
+    <div class="row2">
+      <div class="field">
+        <label for="ai_embedKey">AST EmbedKey</label>
+        <input type="text" id="ai_embedKey" value="${esc(imp.embedKey)}" placeholder="e.g. 8fa85f6caead4d74a8afe9dda920fd94">
+        <div class="sub">From the AST form's embed snippet / Zapier block.</div>
+      </div>
+      <div class="field">
+        <label for="ai_origin">Origin (accepted domain)</label>
+        <input type="text" id="ai_origin" value="${esc(imp.origin)}" placeholder="https://www.joindmh.us">
+      </div>
+    </div>
+    <div class="field">
+      <label for="ai_zapierUrl">AST endpoint</label>
+      <input type="url" id="ai_zapierUrl" value="${esc(imp.zapierUrl)}">
+      <div class="sub">Where results are posted. Leave as-is unless AST changes it.</div>
+    </div>
+
+    <h3 class="section-h">Pre-screen questions</h3>
+    <div id="prescreenList">${rows || '<p class="empty">No questions yet. Add one below.</p>'}</div>
+    <button class="btn ghost small" id="btnAddQ">+ Add question</button>
+
+    <div class="editor-actions" style="margin-top:22px">
+      <button class="btn" id="btnSaveImport">Save</button>
+      <span class="save-note" id="importNote"></span>
+    </div>
+
+    <details class="adv" style="margin-top:24px">
+      <summary>AST app integration (call result webhook)</summary>
+      <div class="field" style="margin-top:12px">
+        <label for="f_astWebhookUrl">AST webhook URL (call results also post here)</label>
+        <input type="url" id="f_astWebhookUrl" value="${esc(c.astWebhookUrl)}" placeholder="https://ast.yourcompany.com/api/call-results">
+        <div class="sub">Optional. When a call ends, First Ring can also POST the disposition + summary here (authenticated with <span class="mono">X-AST-Key</span>). The slug write-back above is the primary path; this is for clients who also want the raw result.</div>
+      </div>
+      <p class="hint">This client's ID for the AST submission hook: <span class="mono">${c.id}</span></p>
+    </details>
+  `;
+
+  $("#btnAddQ").addEventListener("click", () => {
+    const list = $("#prescreenList");
+    if (list.querySelector(".empty")) list.innerHTML = "";
+    const idx = list.querySelectorAll(".pq").length;
+    list.insertAdjacentHTML("beforeend", renderPrescreenRow({ question: "", answers: [{ label: "", slug: "", expected: true }] }, idx));
+    bindPrescreenRow(list.lastElementChild);
+  });
+
+  $("#prescreenList").querySelectorAll(".pq").forEach(bindPrescreenRow);
+
+  $("#btnSaveImport").addEventListener("click", async () => {
+    const prescreen = collectPrescreen();
+    const astImport = {
+      embedKey: $("#ai_embedKey").value.trim(),
+      origin: $("#ai_origin").value.trim(),
+      zapierUrl: $("#ai_zapierUrl").value.trim(),
+      prescreen,
+    };
+    const res = await fetch("/api/clients/" + c.id, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ astImport, astWebhookUrl: $("#f_astWebhookUrl").value }),
+    });
+    const n = $("#importNote");
+    if (res.ok) {
+      clients = await (await fetch("/api/clients")).json();
+      n.textContent = "Saved"; n.style.color = "var(--line-green)";
+    } else { n.textContent = "Save failed"; n.style.color = "var(--red)"; }
+    setTimeout(() => (n.textContent = ""), 1500);
+  });
+}
+
+function renderPrescreenRow(q, qi) {
+  const answers = (q.answers && q.answers.length ? q.answers : [{ label: "", slug: "", expected: true }])
+    .map((a) => `
+      <div class="pa-row">
+        <input class="pa-label" placeholder="Answer (e.g. Yes)" value="${esc(a.label || "")}">
+        <input class="pa-slug mono" placeholder="tag slug (opt-… / grp-…)" value="${esc(a.slug || "")}">
+        <label class="pa-exp"><input type="checkbox" class="pa-expected" ${a.expected ? "checked" : ""}> expected</label>
+        <button class="pa-del" title="Remove answer">×</button>
+      </div>`)
+    .join("");
+  return `
+    <div class="pq">
+      <div class="pq-head">
+        <input class="pq-question" placeholder="Question the bot asks (e.g. Are you at least 21 years old?)" value="${esc(q.question || "")}">
+        <button class="pq-del" title="Remove question">Remove</button>
+      </div>
+      <div class="pa-list">${answers}</div>
+      <button class="pa-add btn ghost small">+ Add answer</button>
+    </div>`;
+}
+
+function bindPrescreenRow(row) {
+  row.querySelector(".pq-del").addEventListener("click", () => {
+    row.remove();
+    const list = $("#prescreenList");
+    if (!list.querySelector(".pq")) list.innerHTML = '<p class="empty">No questions yet. Add one below.</p>';
+  });
+  row.querySelector(".pa-add").addEventListener("click", () => {
+    row.querySelector(".pa-list").insertAdjacentHTML("beforeend", `
+      <div class="pa-row">
+        <input class="pa-label" placeholder="Answer (e.g. No)">
+        <input class="pa-slug mono" placeholder="tag slug (opt-… / grp-…)">
+        <label class="pa-exp"><input type="checkbox" class="pa-expected"> expected</label>
+        <button class="pa-del" title="Remove answer">×</button>
+      </div>`);
+    bindAnswerDeletes(row);
+  });
+  bindAnswerDeletes(row);
+}
+function bindAnswerDeletes(row) {
+  row.querySelectorAll(".pa-del").forEach((b) => {
+    b.onclick = () => b.closest(".pa-row").remove();
+  });
+}
+function collectPrescreen() {
+  const out = [];
+  document.querySelectorAll("#prescreenList .pq").forEach((row) => {
+    const question = row.querySelector(".pq-question").value.trim();
+    if (!question) return;
+    const answers = [];
+    row.querySelectorAll(".pa-row").forEach((ar) => {
+      const label = ar.querySelector(".pa-label").value.trim();
+      const slug = ar.querySelector(".pa-slug").value.trim();
+      if (!label && !slug) return;
+      answers.push({ label, slug, expected: ar.querySelector(".pa-expected").checked });
+    });
+    out.push({ id: "q_" + Math.random().toString(36).slice(2, 8), question, answers });
+  });
+  return out;
+}
+
 async function createClient() {
   const res = await fetch("/api/clients", {
     method: "POST",
@@ -399,10 +615,8 @@ async function createClient() {
   });
   const c = await res.json();
   await loadClients();
-  setClientView("table");
-  selectClient(c.id);
+  openClientDetail(c.id);
 }
-$("#btnNewClient").addEventListener("click", createClient);
 $("#btnNewClientTop").addEventListener("click", createClient);
 
 /* ------------------------- settings + theme + changes -------------------- */
@@ -544,28 +758,6 @@ $("#callRows").addEventListener("click", async (e) => {
   `;
 });
 
-/* --------------------------------- setup ---------------------------------- */
-
-async function loadSetup() {
-  const info = await (await fetch("/api/integration")).json();
-  const cid = clients[0] ? clients[0].id : "cl_xxxxxxxxxx";
-  $("#curlIn").textContent = `POST ${info.base}/api/hooks/submission
-Header  X-AST-Key: {shared key}
-Header  Content-Type: application/json
-
-{
-  "clientId": "${cid}",
-  "candidate": {
-    "firstName": "Jordan",
-    "lastName": "Reyes",
-    "phone": "+19195550142",
-    "position": "Corrections Officer",
-    "astRecordId": "the AST candidate record id"
-  }
-}`;
-  $("#keyHint").textContent = info.sharedKeyHint;
-}
-
 /* --------------------------------- utils ---------------------------------- */
 
 function esc(s) {
@@ -578,7 +770,6 @@ function esc(s) {
   await loadSettings();
   setClientView("panels");
   await loadClients();
-  await loadSetup();
   refreshCalls();
   refreshClientStats();
   setInterval(refreshCalls, 3000);
