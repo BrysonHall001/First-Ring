@@ -336,6 +336,28 @@ app.get("/api/queue", (req, res) => {
   res.json(db.queue.filter((j) => j.status === "queued" || j.status === "calling"));
 });
 
+/*
+ * Per-client live stats for the panel view:
+ *   active   = calls being dialed right now (job status "calling")
+ *   queued   = jobs waiting to dial
+ *   total    = completed calls on record for that client
+ * Returned as a map keyed by clientId so the UI can render every card in one
+ * fetch (better than one request per client with 50+ clients).
+ */
+app.get("/api/client-stats", (req, res) => {
+  const stats = {};
+  for (const c of db.clients) stats[c.id] = { active: 0, queued: 0, total: 0 };
+  for (const j of db.queue) {
+    if (!stats[j.clientId]) continue;
+    if (j.status === "calling") stats[j.clientId].active++;
+    else if (j.status === "queued") stats[j.clientId].queued++;
+  }
+  for (const call of db.calls) {
+    if (stats[call.clientId]) stats[call.clientId].total++;
+  }
+  res.json(stats);
+});
+
 setInterval(() => {
   const now = Date.now();
   for (const job of db.queue) {
@@ -662,6 +684,58 @@ app.get("/api/calls/:id", (req, res) => {
   const call = db.calls.find((x) => x.id === req.params.id);
   if (!call) return res.status(404).json({ error: "Call not found" });
   res.json(call);
+});
+
+/* ---- per-client call log (that client's calls only) ---- */
+app.get("/api/clients/:id/calls", (req, res) => {
+  const light = db.calls
+    .filter((c) => c.clientId === req.params.id)
+    .map(({ transcript, ...rest }) => ({ ...rest, turns: transcript.length }));
+  res.json(light);
+});
+
+/* ---- per-client analytics ---- */
+app.get("/api/clients/:id/analytics", (req, res) => {
+  const calls = db.calls.filter((c) => c.clientId === req.params.id);
+  const total = calls.length;
+  const answeredDispositions = ["interested", "completed", "callback_requested", "not_interested"];
+  const answered = calls.filter((c) => answeredDispositions.includes(c.disposition));
+  const interested = calls.filter((c) => c.disposition === "interested");
+
+  // disposition breakdown
+  const byDisposition = {};
+  for (const c of calls) byDisposition[c.disposition] = (byDisposition[c.disposition] || 0) + 1;
+
+  // avg duration of answered calls
+  const durs = answered.map((c) => c.durationSeconds || 0).filter((d) => d > 0);
+  const avgDuration = durs.length ? Math.round(durs.reduce((a, b) => a + b, 0) / durs.length) : 0;
+
+  // avg attempts to reach
+  const avgAttempts = total ? +(calls.reduce((a, c) => a + (c.attempt || 1), 0) / total).toFixed(1) : 0;
+
+  // last 7 days volume (by local date)
+  const days = {};
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    days[d.toISOString().slice(0, 10)] = 0;
+  }
+  for (const c of calls) {
+    const key = (c.endedAt || "").slice(0, 10);
+    if (key in days) days[key]++;
+  }
+
+  res.json({
+    total,
+    answered: answered.length,
+    connectRate: total ? Math.round((answered.length / total) * 100) : 0,
+    interested: interested.length,
+    interestRate: total ? Math.round((interested.length / total) * 100) : 0,
+    avgDuration,
+    avgAttempts,
+    byDisposition,
+    last7Days: days,
+  });
 });
 
 /* ----------------------- integration info for the UI --------------------- */

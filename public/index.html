@@ -39,7 +39,19 @@
 
 <!-- ============================ CLIENTS ============================ -->
 <section id="view-clients" class="view active">
-  <div class="split">
+  <div class="clients-toolbar">
+    <div class="view-toggle" role="group" aria-label="Client list view">
+      <button class="vt-btn active" id="vtPanels" data-clientview="panels">Panels</button>
+      <button class="vt-btn" id="vtTable" data-clientview="table">Table</button>
+    </div>
+    <button class="btn small" id="btnNewClientTop">Add client</button>
+  </div>
+
+  <!-- PANEL VIEW -->
+  <div id="clientPanels" class="client-panels"></div>
+
+  <!-- TABLE (split editor) VIEW -->
+  <div class="split" id="clientSplit" hidden>
     <aside class="client-list">
       <div class="list-head">
         <h2>Clients</h2>
