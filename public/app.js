@@ -439,7 +439,7 @@ function renderClientEmbed(c) {
   const base = window.location.origin;
   const snippet = buildEmbedSnippet(c.id, c.name, base);
   body.innerHTML = `
-    <p class="tab-intro">Drop a <strong>Code / Embed</strong> block into the client's Webflow page and paste this. It renders a lead form that talks directly to First Ring — when someone submits with the phone-call box ticked, First Ring calls them. No AST app or Zapier needed.</p>
+    <p class="tab-intro">This adds an <strong>“Allow phone call”</strong> toggle to the client's existing AST intake form — no second form. Paste it at the <strong>bottom of the same Webflow Code Embed that holds the AST form</strong> (after its <span class="mono">&lt;/script&gt;</span>). When someone submits with that toggle checked, First Ring calls them. The AST form keeps working exactly as before.</p>
     <div class="field">
       <label>Webflow embed code</label>
       <textarea id="embedCode" class="code-area" readonly spellcheck="false">${esc(snippet)}</textarea>
@@ -448,7 +448,7 @@ function renderClientEmbed(c) {
       <button class="btn" id="btnCopyEmbed">Copy code</button>
       <span class="save-note" id="embedNote"></span>
     </div>
-    <p class="hint">The form posts to <span class="mono">${base}/api/embed/${c.id}/submit</span>. The phone-call opt-in checkbox is the candidate's consent and is stored with the call.</p>
+    <p class="hint">Posts to <span class="mono">${base}/api/embed/${c.id}/submit</span> only when the toggle is checked — that check is the candidate's consent, stored with the call. The toggle is inserted right under “Allow Email”; if the form has no email toggle, it sits just above the Apply button.</p>
   `;
   $("#btnCopyEmbed").addEventListener("click", async () => {
     try {
@@ -462,41 +462,80 @@ function renderClientEmbed(c) {
 }
 
 function buildEmbedSnippet(cid, name, base) {
-  return `<!-- First Ring lead form for ${name} -->
-<div id="fr-form-${cid}"></div>
+  return `<!-- First Ring — adds an "Allow phone call" toggle to the AST form (${name}) -->
+<!-- Paste this at the very bottom of the SAME Code Embed that holds the AST form. -->
 <script>
-(function(){
-  var C = document.getElementById("fr-form-${cid}");
-  C.innerHTML =
-    '<form id="frf-${cid}" style="max-width:520px;font-family:inherit">'
-    + '<input name="firstName" placeholder="First name" required style="display:block;width:100%;margin:0 0 10px;padding:10px;border:1px solid #ccc;border-radius:6px">'
-    + '<input name="lastName" placeholder="Last name" style="display:block;width:100%;margin:0 0 10px;padding:10px;border:1px solid #ccc;border-radius:6px">'
-    + '<input name="phone" placeholder="Phone number" required style="display:block;width:100%;margin:0 0 10px;padding:10px;border:1px solid #ccc;border-radius:6px">'
-    + '<input name="company_website" tabindex="-1" autocomplete="off" style="position:absolute;left:-9999px" aria-hidden="true">'
-    + '<label style="display:flex;gap:8px;align-items:flex-start;margin:0 0 14px;font-size:14px">'
-    + '<input type="checkbox" name="phoneOptIn" style="margin-top:3px">'
-    + '<span>It\\'s okay to call me about this position, including with an automated assistant. Message/data rates may apply.</span></label>'
-    + '<button type="submit" style="padding:11px 18px;border:0;border-radius:6px;background:#3b5b8c;color:#fff;font-weight:600;cursor:pointer">Apply now</button>'
-    + '<p id="frf-msg-${cid}" style="margin:10px 0 0;font-size:14px"></p>'
-    + '</form>';
-  document.getElementById("frf-${cid}").addEventListener("submit", function(e){
-    e.preventDefault();
-    var f = e.target, msg = document.getElementById("frf-msg-${cid}");
-    var body = {
-      firstName: f.firstName.value, lastName: f.lastName.value,
-      phone: f.phone.value, phoneOptIn: f.phoneOptIn.checked,
-      company_website: f.company_website.value
-    };
-    fetch("${base}/api/embed/${cid}/submit", {
-      method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)
-    }).then(function(r){ return r.json(); }).then(function(){
-      msg.textContent = "Thanks! We'll be in touch shortly.";
-      msg.style.color = "#0a7d3f"; f.reset();
-    }).catch(function(){
-      msg.textContent = "Something went wrong. Please try again.";
-      msg.style.color = "#c0392b";
-    });
-  });
+(function () {
+  var FR_CLIENT = "${cid}";
+  var FR_URL = "${base}/api/embed/" + FR_CLIENT + "/submit";
+  var CONTAINER_ID = "lead-form-container"; // the AST form's container
+
+  function whenFormReady(cb) {
+    var tries = 0;
+    var iv = setInterval(function () {
+      var c = document.getElementById(CONTAINER_ID);
+      var form = c && c.querySelector("form.lead-intake");
+      if (form) { clearInterval(iv); cb(form); }
+      else if (++tries > 100) { clearInterval(iv); }
+    }, 200);
+  }
+
+  function buildToggle(form) {
+    if (form.querySelector('[name="AllowPhoneCall"]')) return;
+
+    var emailSwitch = form.querySelector('input[name="AllowEmail"]');
+    var anchor = emailSwitch ? emailSwitch.closest(".form-check") : null;
+
+    var wrap = document.createElement("div");
+    wrap.className = "form-check form-switch mb-4";
+    var input = document.createElement("input");
+    input.type = "checkbox";
+    input.className = "form-check-input";
+    input.name = "AllowPhoneCall";
+    if (emailSwitch) {
+      input.style.borderColor = emailSwitch.style.borderColor;
+      input.style.accentColor = emailSwitch.style.accentColor;
+    }
+    var lbl = document.createElement("label");
+    lbl.className = "form-check-label";
+    lbl.textContent = "Allow phone call";
+    wrap.appendChild(input);
+    wrap.appendChild(lbl);
+
+    if (anchor && anchor.parentNode) {
+      anchor.parentNode.insertBefore(wrap, anchor.nextSibling);
+    } else {
+      var btn = form.querySelector('button[type="submit"]');
+      if (btn && btn.parentNode) form.insertBefore(wrap, btn.parentNode);
+      else form.appendChild(wrap);
+    }
+
+    form.addEventListener("submit", function () {
+      try {
+        if (!input.checked) return; // no consent -> no call
+        var get = function (n) { var el = form.querySelector('[name="' + n + '"]'); return el ? el.value : ""; };
+        var body = {
+          firstName: get("FirstName"),
+          lastName: get("LastName"),
+          phone: get("PhoneNumber"),
+          phoneOptIn: true
+        };
+        if (!body.phone) return;
+        fetch(FR_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          keepalive: true
+        }).catch(function () {});
+      } catch (e) {}
+    }, true);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () { whenFormReady(buildToggle); });
+  } else {
+    whenFormReady(buildToggle);
+  }
 })();
 <\/script>`;
 }
